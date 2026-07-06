@@ -7,7 +7,78 @@ from datetime import datetime, timezone
 import pandas as pd
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+
+
+VALORES_NO_MATERIALES = {
+    "",
+    " ",
+    "nan",
+    "none",
+    "null",
+    "n/a",
+    "na",
+    "no",
+    "false",
+    "0",
+    "0.0",
+    "0.00",
+    "0,0",
+    "0,00",
+}
+
+
+COLUMNAS_PRECIO_MATERIALES = {
+    "valor",
+    "precio",
+    "precio_venta",
+    "precio_lista",
+    "precio_compra",
+    "precio_publico",
+    "precio_unitario",
+    "valor_unitario",
+    "costo",
+    "costo_promedio",
+}
+
+
+COLUMNAS_PROVEEDOR_MATERIALES = {
+    "proveedor",
+    "proveedor_id",
+    "nombre_proveedor",
+    "codigo_proveedor",
+    "referencia_proveedor",
+    "link",
+    "url",
+    "url_proveedor",
+    "link_proveedor",
+    "stock_rectificado",
+    "proveedor_estado",
+}
+
+
+COLUMNAS_INVENTARIO_NUMERICAS_MATERIALES = {
+    "existencia",
+    "stock",
+    "stock_total",
+    "cantidad",
+    "cantidad_disponible",
+    "inventario",
+    "saldo",
+}
+
+
+COLUMNAS_INVENTARIO_TEXTO_MATERIALES = {
+    "bodega",
+    "sede",
+    "ubicacion",
+    "estado_inventario",
+    "fecha_inventario",
+    "inventario_fecha",
+}
+
+
+COLUMNAS_TRAZABILIDAD = {"_origen_row", "_codigo_origen"}
 
 
 def normalizar_nombre_columna(texto: str) -> str:
@@ -17,6 +88,17 @@ def normalizar_nombre_columna(texto: str) -> str:
     """
     texto = str(texto or "").strip().upper()
     texto = re.sub(r"\s+", " ", texto)
+    return texto
+
+
+def normalizar_nombre_materialidad(texto: str) -> str:
+    """
+    Normaliza nombres de campos destino para reglas de materialidad.
+    Convierte nombres a minúsculas y separadores homogéneos.
+    """
+    texto = str(texto or "").strip().lower()
+    texto = re.sub(r"[^a-z0-9]+", "_", texto)
+    texto = re.sub(r"_+", "_", texto).strip("_")
     return texto
 
 
@@ -165,6 +247,114 @@ def detectar_columna_codigo(df_origen: pd.DataFrame) -> str | None:
     return None
 
 
+def valor_es_material(valor) -> bool:
+    """
+    Indica si un valor aporta información real.
+    Se usa para no generar filas solo por ceros, NO, false o vacíos.
+    """
+    if valor is None:
+        return False
+
+    if pd.isna(valor):
+        return False
+
+    texto = str(valor).strip()
+    if not texto:
+        return False
+
+    return texto.lower() not in VALORES_NO_MATERIALES
+
+
+def valor_es_numero_positivo(valor) -> bool:
+    """
+    Indica si un valor representa un número mayor que cero.
+    Es la regla conservadora para precios e inventario cuantitativo.
+    """
+    if valor is None:
+        return False
+
+    if pd.isna(valor):
+        return False
+
+    texto = str(valor).strip()
+    if not texto:
+        return False
+
+    texto = texto.replace("$", "").replace(" ", "")
+
+    # Si viene en formato 1.234,56, se convierte a 1234.56.
+    if "," in texto and "." in texto:
+        texto = texto.replace(".", "").replace(",", ".")
+    else:
+        texto = texto.replace(",", ".")
+
+    try:
+        return float(texto) > 0
+    except ValueError:
+        return False
+
+
+def fila_tiene_campos_materiales(fila: pd.Series, campos_objetivo: set[str]) -> bool:
+    """
+    Evalúa si la fila tiene valores materiales en alguno de los campos indicados.
+    """
+    for campo, valor in fila.items():
+        campo_norm = normalizar_nombre_materialidad(campo)
+        if campo_norm in campos_objetivo and valor_es_material(valor):
+            return True
+    return False
+
+
+def fila_tiene_numeros_positivos(fila: pd.Series, campos_objetivo: set[str]) -> bool:
+    """
+    Evalúa si la fila tiene números positivos en alguno de los campos indicados.
+    """
+    for campo, valor in fila.items():
+        campo_norm = normalizar_nombre_materialidad(campo)
+        if campo_norm in campos_objetivo and valor_es_numero_positivo(valor):
+            return True
+    return False
+
+
+def fila_tiene_materialidad(tabla_destino: str, fila: pd.Series, campos_negocio: list[str]) -> bool:
+    """
+    Regla de generación de filas por tabla destino.
+
+    Objetivo:
+    - Conservar el proceso general de normalización.
+    - Evitar filas generadas solo por 0, 0.00, NO o flags por defecto.
+    - Aplicar criterios más estrictos en tablas críticas detectadas por auditoría.
+    """
+    tabla_norm = limpiar_nombre_archivo(tabla_destino)
+    fila_negocio = fila[campos_negocio]
+
+    if tabla_norm == "producto_precio":
+        return fila_tiene_numeros_positivos(
+            fila_negocio,
+            COLUMNAS_PRECIO_MATERIALES,
+        )
+
+    if tabla_norm == "producto_proveedor":
+        return fila_tiene_campos_materiales(
+            fila_negocio,
+            COLUMNAS_PROVEEDOR_MATERIALES,
+        )
+
+    if tabla_norm == "producto_inventario":
+        return (
+            fila_tiene_numeros_positivos(
+                fila_negocio,
+                COLUMNAS_INVENTARIO_NUMERICAS_MATERIALES,
+            )
+            or fila_tiene_campos_materiales(
+                fila_negocio,
+                COLUMNAS_INVENTARIO_TEXTO_MATERIALES,
+            )
+        )
+
+    return any(valor_es_material(valor) for valor in fila_negocio)
+
+
 def generar_tablas_normalizadas(
     df_origen: pd.DataFrame,
     df_mapeo: pd.DataFrame,
@@ -238,15 +428,20 @@ def generar_tablas_normalizadas(
             )
             columnas_procesadas += 1
 
-        # Eliminar filas completamente vacías, pero conservando trazabilidad.
+        # Eliminar filas sin materialidad real, conservando trazabilidad.
+        # Antes cualquier valor no vacío generaba fila; eso incluía 0, 0.00, NO y flags.
         campos_negocio = [
             c for c in registros_tabla.columns
-            if c not in ["_origen_row", "_codigo_origen"]
+            if c not in COLUMNAS_TRAZABILIDAD
         ]
 
         if campos_negocio:
-            mask_con_datos = registros_tabla[campos_negocio].apply(
-                lambda row: any(str(x).strip() for x in row),
+            mask_con_datos = registros_tabla.apply(
+                lambda row: fila_tiene_materialidad(
+                    tabla_destino=tabla_destino,
+                    fila=row,
+                    campos_negocio=campos_negocio,
+                ),
                 axis=1,
             )
             registros_tabla = registros_tabla[mask_con_datos].copy()
@@ -360,10 +555,18 @@ def main():
             "fuente_modificada": False,
             "carga_azure_realizada": False,
             "salidas_derivadas_generadas": True,
+            "regla_materialidad_por_tabla": True,
+            "tablas_con_materialidad_especifica": [
+                "producto_precio",
+                "producto_proveedor",
+                "producto_inventario",
+            ],
         },
         "nota": (
             "Este script genera tablas derivadas desde el archivo origen y el mapeo. "
-            "No modifica el archivo original ni carga datos a Azure."
+            "No modifica el archivo original ni carga datos a Azure. "
+            "Desde la versión 1.1.0 aplica reglas de materialidad para evitar filas "
+            "generadas solo por ceros, NO o flags por defecto."
         ),
     }
 
