@@ -6,7 +6,7 @@ from datetime import datetime
 import pandas as pd
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 def leer_json(path: Path) -> dict:
@@ -47,6 +47,57 @@ def texto(registro: dict, campo: str, default: str = "") -> str:
     return valor or default
 
 
+def observacion_producto_core(core: dict) -> str:
+    filas = valor_entero(core, "filas_generadas")
+    if filas > 0:
+        return (
+            "Tabla base generada. En la muestra con nombre, los controles posteriores validaron "
+            "código, llave técnica, nombre_producto, item_erp e idn1 con cobertura completa."
+        )
+    return "Tabla base sin filas generadas; requiere revisión de fuente y mapeo."
+
+
+def observacion_inventario(inventario: dict) -> str:
+    filas = valor_entero(inventario, "filas_generadas")
+    if filas > 0:
+        return (
+            "Se generaron registros de inventario. En la versión 1.5.0 se limpió cantidad para evitar "
+            "textos de disponibilidad; stock queda como candidato numérico de inventario físico pendiente "
+            "de validación semántica antes de escalar."
+        )
+    return (
+        "Se conserva sin filas por revisión semántica pendiente. Los datos observados en la muestra "
+        "parecen tiempo de entrega o disponibilidad, no inventario físico."
+    )
+
+
+def texto_inventario(version_script: str, inventario: dict) -> str:
+    filas = valor_entero(inventario, "filas_generadas")
+    if filas > 0:
+        return (
+            "Se detectó que el campo `cantidad` podía mezclar textos de disponibilidad o tiempo de entrega "
+            "con señales numéricas. En la versión 1.5.0 se agregó una limpieza conservadora para que `cantidad` "
+            "solo conserve valores numéricos positivos. Los textos como días, agotado, consultar o descontinuado "
+            "ya no deben aprobarse como cantidad física. El campo `stock` conserva valores numéricos y queda como "
+            "candidato de inventario físico, pendiente de validación semántica antes de una carga masiva."
+        )
+    return (
+        "No se forzó la generación de inventario. Algunos valores observados en campos relacionados con existencia "
+        "parecen corresponder a tiempos de entrega, por ejemplo días o semanas, y no a cantidad física. "
+        "Por eso la tabla se conserva en el contrato de salida, pero sin registros en este piloto."
+    )
+
+
+def decision_inventario(inventario: dict) -> str:
+    filas = valor_entero(inventario, "filas_generadas")
+    if filas > 0:
+        return (
+            "- Mantener `PRODUCTO_INVENTARIO` como tabla generada. `cantidad` queda limpia de disponibilidad textual; "
+            "`stock` queda como candidato numérico de inventario físico pendiente de validación semántica."
+        )
+    return "- Mantener `PRODUCTO_INVENTARIO` como tabla generada, pero sin filas hasta resolver su significado semántico."
+
+
 def generar_markdown(reporte: dict, detalle: pd.DataFrame, piloto_nombre: str) -> str:
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -81,7 +132,10 @@ def generar_markdown(reporte: dict, detalle: pd.DataFrame, piloto_nombre: str) -
     lineas.append("")
     lineas.append("## 2. Alcance del piloto")
     lineas.append("")
-    lineas.append("Este piloto genera archivos CSV derivados por tabla destino. No crea tablas reales en SQL Server, no carga datos a Azure y no modifica la fuente original.")
+    lineas.append(
+        "Este piloto genera archivos CSV derivados por tabla destino. No crea tablas reales en SQL Server, "
+        "no carga datos a Azure y no modifica la fuente original."
+    )
     lineas.append("")
     lineas.append("| Control | Resultado |")
     lineas.append("|---|---:|")
@@ -100,7 +154,7 @@ def generar_markdown(reporte: dict, detalle: pd.DataFrame, piloto_nombre: str) -
     lineas.append("|---|---|---:|---|")
     lineas.append(
         f"| PRODUCTO_CORE | {texto(core, 'modo_generacion', 'HORIZONTAL')} | "
-        f"{valor_entero(core, 'filas_generadas')} | Tabla base del piloto. Pendiente revisar campos de nombre y cobertura de código. |"
+        f"{valor_entero(core, 'filas_generadas')} | {observacion_producto_core(core)} |"
     )
     lineas.append(
         f"| PRODUCTO_PRECIO | {texto(precio, 'modo_generacion', 'VERTICAL_POR_FUENTE_PRECIO')} | "
@@ -112,7 +166,7 @@ def generar_markdown(reporte: dict, detalle: pd.DataFrame, piloto_nombre: str) -
     )
     lineas.append(
         f"| PRODUCTO_INVENTARIO | {texto(inventario, 'modo_generacion', 'HORIZONTAL')} | "
-        f"{valor_entero(inventario, 'filas_generadas')} | Se conserva sin filas por revisión semántica pendiente. Los datos observados parecen tiempo de entrega, no inventario físico. |"
+        f"{valor_entero(inventario, 'filas_generadas')} | {observacion_inventario(inventario)} |"
     )
     lineas.append("")
     lineas.append("## 4. Problemas detectados y correcciones aplicadas")
@@ -142,11 +196,7 @@ def generar_markdown(reporte: dict, detalle: pd.DataFrame, piloto_nombre: str) -
     lineas.append("")
     lineas.append("### 4.4 Inventario")
     lineas.append("")
-    lineas.append(
-        "No se forzó la generación de inventario. Algunos valores observados en campos relacionados con existencia "
-        "parecen corresponder a tiempos de entrega, por ejemplo días o semanas, y no a cantidad física. "
-        "Por eso la tabla se conserva en el contrato de salida, pero sin registros en este piloto."
-    )
+    lineas.append(texto_inventario(version_script, inventario))
     lineas.append("")
     lineas.append("### 4.5 Identificadores")
     lineas.append("")
@@ -163,24 +213,25 @@ def generar_markdown(reporte: dict, detalle: pd.DataFrame, piloto_nombre: str) -
     lineas.append("- No crear tablas reales todavía.")
     lineas.append("- No cargar datos a Azure.")
     lineas.append("- No escalar a toda la tabla hasta completar auditoría de contenido.")
-    lineas.append("- Mantener `PRODUCTO_INVENTARIO` como tabla generada, pero sin filas hasta resolver su significado semántico.")
+    lineas.append(decision_inventario(inventario))
     lineas.append("- Mantener `PRODUCTO_PRECIO` verticalizado por fuente.")
     lineas.append("- Mantener separados `codigo`, `item_erp`, `referencia` y `_producto_key_origen`.")
     lineas.append("")
     lineas.append("## 6. Pendientes antes de escalar")
     lineas.append("")
-    lineas.append("1. Revisar `PRODUCTO_CORE`, especialmente cobertura de nombre del producto y campos principales.")
-    lineas.append("2. Revisar semánticamente los campos de inventario y disponibilidad.")
+    lineas.append("1. Consolidar comparación entre los pilotos `top1000_v7` y `productos_hugo_con_nombre_top1000_v2`.")
+    lineas.append("2. Revisar semánticamente los campos de inventario y disponibilidad antes de aprobar carga masiva.")
     lineas.append("3. Auditar otras tablas repetibles que podrían requerir verticalización, como parámetros, documentos, media, equivalentes o certificados.")
     lineas.append("4. Ejecutar una muestra más representativa que no dependa solo de `TOP 1000`.")
-    lineas.append("5. Generar comparación contra el piloto anterior antes de aumentar volumen.")
+    lineas.append("5. Generar una recomendación de escalamiento con controles y criterios de aceptación.")
     lineas.append("")
     lineas.append("## 7. Conclusión")
     lineas.append("")
     lineas.append(
         "El piloto ya no solo separa columnas según el mapeo. Ahora incorpora reglas de calidad, "
-        "trazabilidad y preservación de datos materiales. La salida es más defendible técnicamente, "
-        "pero todavía debe considerarse piloto auditado, no versión final de carga masiva."
+        "trazabilidad y preservación de datos materiales. La salida es más sólida técnicamente y permite "
+        "continuar con una auditoría controlada antes de escalar. Todavía debe considerarse piloto auditado, "
+        "no versión final de carga masiva."
     )
     lineas.append("")
     return "\n".join(lineas)
