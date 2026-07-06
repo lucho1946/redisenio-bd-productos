@@ -1,0 +1,27 @@
+# Entornos
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Variables sensibles
+.env
+.env.*
+*.key
+*.pem
+
+# Salidas generadas
+04_salidas_normalizadas/
+05_reportes/
+06_entregables/
+
+# Respaldos
+99_respaldo/
+
+# Archivos temporales
+*.tmp
+~$*.xlsx
+
+# Sistema
+.DS_Store
+Thumbs.db

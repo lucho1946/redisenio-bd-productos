@@ -1,0 +1,83 @@
+{
+  "version": "1.0.0",
+  "fecha_ejecucion_utc": "2026-07-03T20:01:36.402122+00:00",
+  "archivo_columnas_actuales": "/mnt/data/columnas tiene la tabla.xlsx",
+  "hoja_columnas_actuales": "Hoja1",
+  "archivo_normalizacion": "/mnt/data/Normalizacion_Tabla_Productos.xlsx",
+  "hojas_normalizacion": [
+    "RESUMEN",
+    "MODELO_DESTINO",
+    "MAPEO_445_COLUMNAS"
+  ],
+  "headers_mapeo_detectados": [
+    "COLUMNA_ORIGEN",
+    "TIPO",
+    "LEN",
+    "TABLA_DESTINO",
+    "CAMPO_DESTINO",
+    "TRANSFORMACION"
+  ],
+  "headers_actual_detectados": [
+    "COLUMN_NAME",
+    "DATA_TYPE",
+    "CHARACTER_MAXIMUM_LENGTH"
+  ],
+  "columnas_actuales_detectadas": 445,
+  "columnas_mapeo_detectadas": 445,
+  "columnas_comunes": 445,
+  "faltan_en_mapeo": 0,
+  "sobran_en_mapeo": 0,
+  "tablas_destino_detectadas": 31,
+  "distribucion_estados_cruce": {
+    "OK_EN_AMBOS": 445
+  },
+  "distribucion_tablas_destino": {
+    "CAMPANA": 2,
+    "CATEGORIA": 36,
+    "CATEGORIA_VISIBILIDAD": 12,
+    "ELIMINAR": 5,
+    "MARCA": 4,
+    "MARCA_KEYWORD": 3,
+    "PARAMETRO": 13,
+    "PRODUCTO_ACCESORIO": 2,
+    "PRODUCTO_APLICACION": 7,
+    "PRODUCTO_AUDITORIA": 36,
+    "PRODUCTO_CAMPANA": 5,
+    "PRODUCTO_CATEGORIA": 16,
+    "PRODUCTO_CERTIFICADO": 5,
+    "PRODUCTO_COMPRA": 7,
+    "PRODUCTO_CORE": 16,
+    "PRODUCTO_DESCRIPCION": 12,
+    "PRODUCTO_DOCUMENTO": 16,
+    "PRODUCTO_EQUIVALENTE": 9,
+    "PRODUCTO_ERP_WO": 5,
+    "PRODUCTO_FISCAL": 4,
+    "PRODUCTO_IA": 5,
+    "PRODUCTO_INVENTARIO": 26,
+    "PRODUCTO_KEYWORD": 13,
+    "PRODUCTO_LOGISTICA": 12,
+    "PRODUCTO_MEDIA": 4,
+    "PRODUCTO_PARAMETRO": 73,
+    "PRODUCTO_PRECIO": 25,
+    "PRODUCTO_PRECIO_COMPETENCIA": 6,
+    "PRODUCTO_PROVEEDOR": 40,
+    "PRODUCTO_VISIBILIDAD": 12,
+    "REVISAR/ELIMINAR": 14
+  },
+  "alertas_tipo_longitud": {
+    "LONGITUD_DISTINTA": 6,
+    "SIN_ALERTA_TIPO_LEN": 439
+  },
+  "alertas_mapeo": {
+    "SIN_ALERTA_MAPEO": 445
+  },
+  "primeras_columnas_faltantes_en_mapeo": [],
+  "primeras_columnas_sobrantes_en_mapeo": [],
+  "diagnostico": "El cruce permite saber si el script puede cubrir la tabla actual. Si hay columnas faltantes o sobrantes, el script debe generar tablas normalizadas y un reporte de pendientes antes de cualquier carga.",
+  "controles": {
+    "sin_modificar_fuentes": true,
+    "diagnostico_derivado": true,
+    "csv_detalle_generado": true,
+    "json_reporte_generado": true
+  }
+}
