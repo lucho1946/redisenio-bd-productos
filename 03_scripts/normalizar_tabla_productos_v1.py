@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 
 VALORES_NO_MATERIALES = {
@@ -85,6 +85,47 @@ COLUMNAS_TRAZABILIDAD = {
     "_producto_key_origen",
     "_codigo_origen",
 }
+
+
+DOCUMENTOS_PRODUCTO_DEFINICION = {
+    "LINK_CAT": {"tipo_documento": "CATALOGO", "idioma": "es"},
+    "LINK_GUIA_RAP": {"tipo_documento": "GUIA_RAPIDA", "idioma": "es"},
+    "LINK_MAN": {"tipo_documento": "MANUAL", "idioma": "es"},
+    "OTRO_LINK_1": {"tipo_documento": "OTRO", "idioma": "es"},
+    "VIDEO": {"tipo_documento": "VIDEO", "idioma": ""},
+    "LINK_CAT_ESP": {"tipo_documento": "CATALOGO", "idioma": "es"},
+    "LINK_GUIA_RAP_ESP": {"tipo_documento": "GUIA_RAPIDA", "idioma": "es"},
+    "LINK_MAN_ESP": {"tipo_documento": "MANUAL", "idioma": "es"},
+    "LINK_OTRA_INFO_ESP": {"tipo_documento": "OTRO", "idioma": "es"},
+    "LINK_CAT_ING": {"tipo_documento": "CATALOGO", "idioma": "en"},
+    "LINK_GUIA_RAP_ING": {"tipo_documento": "GUIA_RAPIDA", "idioma": "en"},
+    "LINK_MAN_ING": {"tipo_documento": "MANUAL", "idioma": "en"},
+    "LINK_OTRA_INFO_ING": {"tipo_documento": "OTRO", "idioma": "en"},
+    "LINK_PROD": {"tipo_documento": "PAGINA_PRODUCTO", "idioma": ""},
+    "LINK_PROD2": {"tipo_documento": "PAGINA_PRODUCTO_2", "idioma": ""},
+    "LINK_PROX": {"tipo_documento": "PROXIMO", "idioma": ""},
+}
+
+
+EXTENSIONES_DOCUMENTALES = (
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".gif",
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".zip",
+    ".rar",
+)
 
 
 def normalizar_nombre_columna(texto: str) -> str:
@@ -238,6 +279,7 @@ def aplicar_transformacion(valor, transformacion: str):
     # Transformación no implementada: se conserva el valor.
     return valor
 
+
 def limpiar_valor_por_tabla_campo(tabla_destino: str, campo_destino: str, valor):
     """
     Limpieza conservadora por tabla/campo.
@@ -256,6 +298,7 @@ def limpiar_valor_por_tabla_campo(tabla_destino: str, campo_destino: str, valor)
         return ""
 
     return valor
+
 
 def valor_es_material(valor) -> bool:
     """
@@ -585,13 +628,12 @@ def generar_producto_precio_vertical(
     return registros_tabla, estadisticas
 
 
-
 def detectar_tipo_parametro_origen(columna_origen: str) -> str:
     """
-    Clasifica la columna origen sin inventar el par?metro real.
+    Clasifica la columna origen sin inventar el parámetro real.
 
-    Esto NO define el nombre oficial del par?metro.
-    Solo conserva el tipo t?cnico de origen para trazabilidad.
+    Esto NO define el nombre oficial del parámetro.
+    Solo conserva el tipo técnico de origen para trazabilidad.
     """
     col = normalizar_nombre_columna(columna_origen)
 
@@ -619,11 +661,11 @@ def generar_producto_parametro_vertical(
     """
     Genera PRODUCTO_PARAMETRO en formato vertical.
 
-    Decisi?n conservadora:
+    Decisión conservadora:
     - Se conserva cada valor material de CAR_IND_*, CAR_COM_* y DIMENSION.
     - Se guarda la columna origen como parametro_origen.
     - No se inventa parametro_id.
-    - parametro_id (FK) queda vac?o hasta tener fuente oficial.
+    - parametro_id (FK) queda vacío hasta tener fuente oficial.
     """
     registros = []
     columnas_procesadas = 0
@@ -703,6 +745,268 @@ def generar_producto_parametro_vertical(
 
     return registros_tabla, estadisticas
 
+
+def obtener_definicion_documento(columna_origen: str) -> dict:
+    """
+    Devuelve tipo_documento e idioma únicamente para columnas documentales revisadas.
+    No deduce tipos por intuición desde el texto del valor.
+    """
+    col = normalizar_nombre_columna(columna_origen)
+    return DOCUMENTOS_PRODUCTO_DEFINICION.get(
+        col,
+        {"tipo_documento": "", "idioma": ""},
+    )
+
+
+def valor_documento_es_url_o_ruta(valor) -> bool:
+    """
+    Detecta si el valor parece URL o ruta documental existente.
+
+    Regla conservadora:
+    - No transforma referencias textuales en URL.
+    - Solo marca como URL/ruta si el propio valor trae protocolo, www, separadores
+      de ruta o extensión documental reconocible.
+    """
+    if not valor_es_material(valor):
+        return False
+
+    texto = str(valor).strip()
+    texto_lower = texto.lower()
+
+    if re.match(r"^[a-z][a-z0-9+.-]*://", texto_lower):
+        return True
+
+    if texto_lower.startswith("www."):
+        return True
+
+    if "/" in texto or "\\" in texto:
+        return True
+
+    return texto_lower.endswith(EXTENSIONES_DOCUMENTALES)
+
+
+def estado_documento(valor, tipo_documento: str) -> str:
+    """
+    Estado trazable del valor documental sin inventar información.
+    """
+    if not tipo_documento:
+        if valor_documento_es_url_o_ruta(valor):
+            return "URL_DETECTADA_TIPO_PENDIENTE"
+        return "REFERENCIA_DOCUMENTO_LEGADA_TIPO_PENDIENTE"
+
+    if valor_documento_es_url_o_ruta(valor):
+        return "URL_DETECTADA"
+
+    return "REFERENCIA_DOCUMENTO_LEGADA"
+
+
+def generar_producto_documento_vertical(
+    df_origen: pd.DataFrame,
+    grupo: pd.DataFrame,
+    columnas_origen_norm: dict[str, str],
+    producto_key_origen: pd.Series,
+    codigo_origen_real: pd.Series,
+    tabla_destino: str,
+    errores: list[dict],
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Genera PRODUCTO_DOCUMENTO en formato vertical.
+
+    Decisión conservadora v1.7.0:
+    - Se conserva una fila por producto y por columna documental origen.
+    - documento_origen conserva la columna fuente real.
+    - tipo_documento e idioma salen del mapeo revisado de LINK_*.
+    - No se inventan URLs: si el valor es referencia textual, queda en referencia_documento.
+    """
+    registros = []
+    columnas_procesadas = 0
+    columnas_no_encontradas = 0
+    campos_destino_vacios = 0
+    columnas_ya_procesadas = set()
+
+    reglas_documento = grupo.copy()
+
+    for _, regla in reglas_documento.iterrows():
+        col_origen = str(regla["COLUMNA_ORIGEN"]).strip()
+        col_origen_norm = normalizar_nombre_columna(col_origen)
+        campo_destino = str(regla["CAMPO_DESTINO"]).strip()
+        transformacion = str(regla["TRANSFORMACION"]).strip()
+
+        if col_origen_norm in columnas_ya_procesadas:
+            continue
+        columnas_ya_procesadas.add(col_origen_norm)
+
+        if not campo_destino:
+            campos_destino_vacios += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "error": "SIN_CAMPO_DESTINO",
+                "detalle": "La regla no tiene CAMPO_DESTINO.",
+            })
+            continue
+
+        if col_origen_norm not in columnas_origen_norm:
+            columnas_no_encontradas += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "campo_destino": campo_destino,
+                "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                "detalle": "La columna del mapeo no existe en el archivo origen.",
+            })
+            continue
+
+        col_real = columnas_origen_norm[col_origen_norm]
+        definicion = obtener_definicion_documento(col_origen)
+        tipo_documento = definicion["tipo_documento"]
+        idioma = definicion["idioma"]
+
+        serie = df_origen[col_real].map(
+            lambda v: aplicar_transformacion(v, transformacion)
+        )
+
+        columnas_procesadas += 1
+        mask_material = serie.map(valor_es_material)
+
+        for idx in serie[mask_material].index:
+            valor = str(serie.loc[idx]).strip()
+            es_url = valor_documento_es_url_o_ruta(valor)
+
+            registros.append({
+                "_origen_row": int(idx) + 1,
+                "_producto_key_origen": producto_key_origen.loc[idx],
+                "_codigo_origen": codigo_origen_real.loc[idx],
+                "documento_origen": col_origen,
+                "tipo_documento": tipo_documento,
+                "idioma": idioma,
+                "valor_documento": valor,
+                "url": valor if es_url else "",
+                "referencia_documento": "" if es_url else valor,
+                "es_url": "SI" if es_url else "NO",
+                "estado_documento": estado_documento(valor, tipo_documento),
+            })
+
+    columnas = [
+        "_origen_row",
+        "_producto_key_origen",
+        "_codigo_origen",
+        "documento_origen",
+        "tipo_documento",
+        "idioma",
+        "valor_documento",
+        "url",
+        "referencia_documento",
+        "es_url",
+        "estado_documento",
+    ]
+
+    registros_tabla = pd.DataFrame(registros, columns=columnas)
+
+    estadisticas = {
+        "columnas_procesadas": columnas_procesadas,
+        "columnas_no_encontradas": columnas_no_encontradas,
+        "campos_destino_vacios": campos_destino_vacios,
+        "modo_generacion": "VERTICAL_POR_DOCUMENTO_ORIGEN",
+    }
+
+    return registros_tabla, estadisticas
+
+
+def generar_tabla_horizontal(
+    df_origen: pd.DataFrame,
+    grupo: pd.DataFrame,
+    columnas_origen_norm: dict[str, str],
+    producto_key_origen: pd.Series,
+    codigo_origen_real: pd.Series,
+    tabla_destino: str,
+    errores: list[dict],
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Genera una tabla destino en modo horizontal, conservando la lógica general v1.
+    """
+    columnas_procesadas = 0
+    columnas_no_encontradas = 0
+    campos_destino_vacios = 0
+
+    registros_tabla = pd.DataFrame()
+    registros_tabla["_origen_row"] = range(1, len(df_origen) + 1)
+    registros_tabla["_producto_key_origen"] = producto_key_origen
+    registros_tabla["_codigo_origen"] = codigo_origen_real
+
+    for _, regla in grupo.iterrows():
+        col_origen = str(regla["COLUMNA_ORIGEN"]).strip()
+        col_origen_norm = normalizar_nombre_columna(col_origen)
+        campo_destino = str(regla["CAMPO_DESTINO"]).strip()
+        transformacion = str(regla["TRANSFORMACION"]).strip()
+
+        if not campo_destino:
+            campos_destino_vacios += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "error": "SIN_CAMPO_DESTINO",
+                "detalle": "La regla no tiene CAMPO_DESTINO.",
+            })
+            continue
+
+        if col_origen_norm not in columnas_origen_norm:
+            columnas_no_encontradas += 1
+            registros_tabla[campo_destino] = ""
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "campo_destino": campo_destino,
+                "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                "detalle": "La columna del mapeo no existe en el archivo origen.",
+            })
+            continue
+
+        col_real = columnas_origen_norm[col_origen_norm]
+        serie_transformada = df_origen[col_real].map(
+            lambda v: limpiar_valor_por_tabla_campo(
+                tabla_destino=tabla_destino,
+                campo_destino=campo_destino,
+                valor=aplicar_transformacion(v, transformacion),
+            )
+        )
+
+        asignar_campo_destino(
+            registros_tabla=registros_tabla,
+            campo_destino=campo_destino,
+            serie_nueva=serie_transformada,
+        )
+
+        columnas_procesadas += 1
+
+    # Eliminar filas sin materialidad real, conservando trazabilidad.
+    # Antes cualquier valor no vacío generaba fila; eso incluía 0, 0.00, NO, NULL y flags.
+    campos_negocio = [
+        c for c in registros_tabla.columns
+        if c not in COLUMNAS_TRAZABILIDAD
+    ]
+
+    if campos_negocio:
+        mask_con_datos = registros_tabla.apply(
+            lambda row: fila_tiene_materialidad(
+                tabla_destino=tabla_destino,
+                fila=row,
+                campos_negocio=campos_negocio,
+            ),
+            axis=1,
+        )
+        registros_tabla = registros_tabla[mask_con_datos].copy()
+
+    estadisticas = {
+        "columnas_procesadas": columnas_procesadas,
+        "columnas_no_encontradas": columnas_no_encontradas,
+        "campos_destino_vacios": campos_destino_vacios,
+        "modo_generacion": "HORIZONTAL",
+    }
+
+    return registros_tabla, estadisticas
+
+
 def generar_tablas_normalizadas(
     df_origen: pd.DataFrame,
     df_mapeo: pd.DataFrame,
@@ -738,11 +1042,6 @@ def generar_tablas_normalizadas(
         if tabla_destino.upper() in tablas_a_ignorar:
             continue
 
-        modo_generacion = "HORIZONTAL"
-        columnas_procesadas = 0
-        columnas_no_encontradas = 0
-        campos_destino_vacios = 0
-
         if tabla_norm == "producto_precio":
             registros_tabla, estadisticas = generar_producto_precio_vertical(
                 df_origen=df_origen,
@@ -753,10 +1052,6 @@ def generar_tablas_normalizadas(
                 tabla_destino=tabla_destino,
                 errores=errores,
             )
-            columnas_procesadas = estadisticas["columnas_procesadas"]
-            columnas_no_encontradas = estadisticas["columnas_no_encontradas"]
-            campos_destino_vacios = estadisticas["campos_destino_vacios"]
-            modo_generacion = estadisticas["modo_generacion"]
 
         elif tabla_norm == "producto_parametro":
             registros_tabla, estadisticas = generar_producto_parametro_vertical(
@@ -768,79 +1063,28 @@ def generar_tablas_normalizadas(
                 tabla_destino=tabla_destino,
                 errores=errores,
             )
-            columnas_procesadas = estadisticas["columnas_procesadas"]
-            columnas_no_encontradas = estadisticas["columnas_no_encontradas"]
-            campos_destino_vacios = estadisticas["campos_destino_vacios"]
-            modo_generacion = estadisticas["modo_generacion"]
+
+        elif tabla_norm == "producto_documento":
+            registros_tabla, estadisticas = generar_producto_documento_vertical(
+                df_origen=df_origen,
+                grupo=grupo,
+                columnas_origen_norm=columnas_origen_norm,
+                producto_key_origen=producto_key_origen,
+                codigo_origen_real=codigo_origen_real,
+                tabla_destino=tabla_destino,
+                errores=errores,
+            )
 
         else:
-            registros_tabla = pd.DataFrame()
-            registros_tabla["_origen_row"] = range(1, len(df_origen) + 1)
-            registros_tabla["_producto_key_origen"] = producto_key_origen
-            registros_tabla["_codigo_origen"] = codigo_origen_real
-
-            for _, regla in grupo.iterrows():
-                col_origen = str(regla["COLUMNA_ORIGEN"]).strip()
-                col_origen_norm = normalizar_nombre_columna(col_origen)
-                campo_destino = str(regla["CAMPO_DESTINO"]).strip()
-                transformacion = str(regla["TRANSFORMACION"]).strip()
-
-                if not campo_destino:
-                    campos_destino_vacios += 1
-                    errores.append({
-                        "tabla_destino": tabla_destino,
-                        "columna_origen": col_origen,
-                        "error": "SIN_CAMPO_DESTINO",
-                        "detalle": "La regla no tiene CAMPO_DESTINO.",
-                    })
-                    continue
-
-                if col_origen_norm not in columnas_origen_norm:
-                    columnas_no_encontradas += 1
-                    registros_tabla[campo_destino] = ""
-                    errores.append({
-                        "tabla_destino": tabla_destino,
-                        "columna_origen": col_origen,
-                        "campo_destino": campo_destino,
-                        "error": "COLUMNA_ORIGEN_NO_EXISTE",
-                        "detalle": "La columna del mapeo no existe en el archivo origen.",
-                    })
-                    continue
-
-                col_real = columnas_origen_norm[col_origen_norm]
-                serie_transformada = df_origen[col_real].map(
-                    lambda v: limpiar_valor_por_tabla_campo(
-                        tabla_destino=tabla_destino,
-                        campo_destino=campo_destino,
-                        valor=aplicar_transformacion(v, transformacion),
-                    )
-                )
-
-                asignar_campo_destino(
-                    registros_tabla=registros_tabla,
-                    campo_destino=campo_destino,
-                    serie_nueva=serie_transformada,
-                )
-
-                columnas_procesadas += 1
-
-            # Eliminar filas sin materialidad real, conservando trazabilidad.
-            # Antes cualquier valor no vacío generaba fila; eso incluía 0, 0.00, NO, NULL y flags.
-            campos_negocio = [
-                c for c in registros_tabla.columns
-                if c not in COLUMNAS_TRAZABILIDAD
-            ]
-
-            if campos_negocio:
-                mask_con_datos = registros_tabla.apply(
-                    lambda row: fila_tiene_materialidad(
-                        tabla_destino=tabla_destino,
-                        fila=row,
-                        campos_negocio=campos_negocio,
-                    ),
-                    axis=1,
-                )
-                registros_tabla = registros_tabla[mask_con_datos].copy()
+            registros_tabla, estadisticas = generar_tabla_horizontal(
+                df_origen=df_origen,
+                grupo=grupo,
+                columnas_origen_norm=columnas_origen_norm,
+                producto_key_origen=producto_key_origen,
+                codigo_origen_real=codigo_origen_real,
+                tabla_destino=tabla_destino,
+                errores=errores,
+            )
 
         nombre_archivo = limpiar_nombre_archivo(tabla_destino) + ".csv"
         path_salida = salida_dir / nombre_archivo
@@ -857,11 +1101,11 @@ def generar_tablas_normalizadas(
         reportes_tablas.append({
             "tabla_destino": tabla_destino,
             "archivo_salida": str(path_salida),
-            "modo_generacion": modo_generacion,
+            "modo_generacion": estadisticas["modo_generacion"],
             "columnas_mapeadas_para_tabla": int(len(grupo)),
-            "columnas_procesadas": int(columnas_procesadas),
-            "columnas_no_encontradas": int(columnas_no_encontradas),
-            "campos_destino_vacios": int(campos_destino_vacios),
+            "columnas_procesadas": int(estadisticas["columnas_procesadas"]),
+            "columnas_no_encontradas": int(estadisticas["columnas_no_encontradas"]),
+            "campos_destino_vacios": int(estadisticas["campos_destino_vacios"]),
             "filas_origen": int(len(df_origen)),
             "filas_generadas": int(len(registros_tabla)),
         })
@@ -958,10 +1202,14 @@ def main():
                 "producto_proveedor",
                 "producto_inventario",
                 "producto_parametro",
+                "producto_documento",
             ],
             "producto_precio_verticalizado_por_fuente": True,
             "producto_parametro_verticalizado_por_origen": True,
             "producto_parametro_parametro_id_inventado": False,
+            "producto_documento_verticalizado_por_origen": True,
+            "producto_documento_url_inventada": False,
+            "producto_documento_tipo_inventado": False,
             "producto_key_origen_generado": True,
             "codigo_origen_solo_codigo_real": True,
         },
@@ -975,7 +1223,11 @@ def main():
             "Desde la versión 1.3.0 se evita que columnas posteriores no materiales "
             "sobrescriban campos destino ya poblados con datos reales. "
             "Desde la versión 1.4.0 se separa el código real de ViaIndustrial "
-            "(_codigo_origen) de la llave técnica de trazabilidad (_producto_key_origen)."
+            "(_codigo_origen) de la llave técnica de trazabilidad (_producto_key_origen). "
+            "Desde la versión 1.6.0 PRODUCTO_PARAMETRO se genera en formato vertical "
+            "por parametro_origen, sin inventar parametro_id. "
+            "Desde la versión 1.7.0 PRODUCTO_DOCUMENTO se genera en formato vertical "
+            "por documento_origen, separando URL/ruta real de referencia documental legada."
         ),
     }
 
