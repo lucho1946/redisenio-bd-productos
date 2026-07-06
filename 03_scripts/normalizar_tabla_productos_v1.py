@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 
 VALORES_NO_MATERIALES = {
@@ -238,6 +238,24 @@ def aplicar_transformacion(valor, transformacion: str):
     # Transformación no implementada: se conserva el valor.
     return valor
 
+def limpiar_valor_por_tabla_campo(tabla_destino: str, campo_destino: str, valor):
+    """
+    Limpieza conservadora por tabla/campo.
+
+    Caso PRODUCTO_INVENTARIO:
+    - cantidad solo debe conservar números positivos.
+    - textos como '3 DIAS', 'AGOTADO', 'CONSULTAR' o 'DESCONTINUADO'
+      no son cantidad física y se dejan vacíos.
+    """
+    tabla_norm = limpiar_nombre_archivo(tabla_destino)
+    campo_norm = normalizar_nombre_materialidad(campo_destino)
+
+    if tabla_norm == "producto_inventario" and campo_norm == "cantidad":
+        if valor_es_numero_positivo(valor):
+            return valor
+        return ""
+
+    return valor
 
 def valor_es_material(valor) -> bool:
     """
@@ -658,7 +676,11 @@ def generar_tablas_normalizadas(
 
                 col_real = columnas_origen_norm[col_origen_norm]
                 serie_transformada = df_origen[col_real].map(
-                    lambda v: aplicar_transformacion(v, transformacion)
+                    lambda v: limpiar_valor_por_tabla_campo(
+                        tabla_destino=tabla_destino,
+                        campo_destino=campo_destino,
+                        valor=aplicar_transformacion(v, transformacion),
+                    )
                 )
 
                 asignar_campo_destino(
