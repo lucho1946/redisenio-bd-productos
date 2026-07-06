@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 
 
 VALORES_NO_MATERIALES = {
@@ -113,6 +113,34 @@ CERTIFICADOS_PRODUCTO_DEFINICION = {
     "CERTIFICADO_3": {"tipo_certificado": "GENERAL"},
     "CERTIFICADO_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
     "COD_PROV_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
+}
+
+
+EQUIVALENTES_PRODUCTO_DEFINICION = {
+    "REF_ALTERNATIVA": {
+        "tipo_equivalente": "REF_ALTERNATIVA",
+        "fuente_equivalente": "ORIGEN",
+        "marca_origen": "",
+        "verificado_origen": "",
+    },
+    "EQUIVALENTE": {
+        "tipo_equivalente": "EQUIVALENTE",
+        "fuente_equivalente": "ORIGEN",
+        "marca_origen": "MARCA_EQUIVALENTE",
+        "verificado_origen": "EQUIVALENTE_VERIFICADO",
+    },
+    "EQUIVALENTE_2": {
+        "tipo_equivalente": "EQUIVALENTE",
+        "fuente_equivalente": "ORIGEN",
+        "marca_origen": "MARCA_EQUIVALENTE_2",
+        "verificado_origen": "EQUIVALENTE_VERIFICADO_2",
+    },
+    "EQUIVALENTE_IA": {
+        "tipo_equivalente": "IA",
+        "fuente_equivalente": "IA",
+        "marca_origen": "",
+        "verificado_origen": "",
+    },
 }
 
 
@@ -1112,6 +1140,198 @@ def generar_producto_certificado_vertical(
     return registros_tabla, estadisticas
 
 
+
+def obtener_valor_columna_origen(
+    df_origen: pd.DataFrame,
+    columnas_origen_norm: dict[str, str],
+    columna_origen: str,
+    idx,
+):
+    """
+    Obtiene un valor desde una columna origen de forma segura.
+    No genera datos nuevos si la columna no existe.
+    """
+    if not columna_origen:
+        return ""
+
+    col_norm = normalizar_nombre_columna(columna_origen)
+    if col_norm not in columnas_origen_norm:
+        return ""
+
+    col_real = columnas_origen_norm[col_norm]
+    return df_origen.at[idx, col_real]
+
+
+def estado_equivalente(
+    referencia_equivalente,
+    tipo_equivalente: str,
+    verificado,
+    link_proveedor,
+) -> str:
+    """
+    Estado trazable de la equivalencia sin deducir relaciones por texto.
+    """
+    if not valor_es_material(referencia_equivalente):
+        return "SIN_REFERENCIA_EQUIVALENTE"
+
+    if tipo_equivalente == "IA":
+        return "EQUIVALENTE_IA_DETECTADO"
+
+    if tipo_equivalente == "REF_ALTERNATIVA":
+        return "REFERENCIA_ALTERNATIVA_DETECTADA"
+
+    verificado_texto = str(verificado or "").strip()
+    if verificado_texto == "1":
+        return "EQUIVALENTE_VERIFICADO"
+
+    if verificado_texto == "0":
+        return "EQUIVALENTE_NO_VERIFICADO"
+
+    if valor_es_material(link_proveedor):
+        return "EQUIVALENTE_CON_LINK_PROVEEDOR"
+
+    return "EQUIVALENTE_DETECTADO"
+
+
+def generar_producto_equivalente_vertical(
+    df_origen: pd.DataFrame,
+    grupo: pd.DataFrame,
+    columnas_origen_norm: dict[str, str],
+    producto_key_origen: pd.Series,
+    codigo_origen_real: pd.Series,
+    tabla_destino: str,
+    errores: list[dict],
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Genera PRODUCTO_EQUIVALENTE en formato vertical.
+
+    Decision conservadora v1.9.0:
+    - Cada columna de equivalencia material genera su propia fila.
+    - No se genera fila solo por link_proveedor, marca o verificado.
+    - No se deducen equivalencias por texto.
+    - No se usan reglas por producto, codigo, fila o valor especifico.
+    """
+    registros = []
+    columnas_procesadas = 0
+    columnas_no_encontradas = 0
+    campos_destino_vacios = 0
+
+    columnas_mapeadas = {
+        normalizar_nombre_columna(str(r["COLUMNA_ORIGEN"]).strip()): str(r["COLUMNA_ORIGEN"]).strip()
+        for _, r in grupo.iterrows()
+    }
+
+    # Contar columnas mapeadas encontradas para el reporte.
+    for col_norm, col_origen in columnas_mapeadas.items():
+        if col_norm in columnas_origen_norm:
+            columnas_procesadas += 1
+        else:
+            columnas_no_encontradas += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "campo_destino": "",
+                "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                "detalle": "La columna del mapeo no existe en el archivo origen.",
+            })
+
+    link_col = "LINK_PROVEEDOR_EQUIVALENTE"
+
+    for col_origen, definicion in EQUIVALENTES_PRODUCTO_DEFINICION.items():
+        col_origen_norm = normalizar_nombre_columna(col_origen)
+
+        if col_origen_norm not in columnas_mapeadas:
+            continue
+
+        if col_origen_norm not in columnas_origen_norm:
+            continue
+
+        col_real = columnas_origen_norm[col_origen_norm]
+        serie = df_origen[col_real].map(lambda v: aplicar_transformacion(v, ""))
+
+        mask_material = serie.map(valor_es_material)
+
+        for idx in serie[mask_material].index:
+            referencia = str(serie.loc[idx]).strip()
+
+            marca = obtener_valor_columna_origen(
+                df_origen=df_origen,
+                columnas_origen_norm=columnas_origen_norm,
+                columna_origen=definicion.get("marca_origen", ""),
+                idx=idx,
+            )
+            marca = str(marca or "").strip()
+            if not valor_es_material(marca):
+                marca = ""
+
+            verificado = obtener_valor_columna_origen(
+                df_origen=df_origen,
+                columnas_origen_norm=columnas_origen_norm,
+                columna_origen=definicion.get("verificado_origen", ""),
+                idx=idx,
+            )
+            verificado = str(verificado or "").strip()
+            if verificado not in {"0", "1"}:
+                verificado = ""
+
+            link_proveedor = obtener_valor_columna_origen(
+                df_origen=df_origen,
+                columnas_origen_norm=columnas_origen_norm,
+                columna_origen=link_col,
+                idx=idx,
+            )
+            link_proveedor = str(link_proveedor or "").strip()
+            if not valor_es_material(link_proveedor):
+                link_proveedor = ""
+
+            tipo_equivalente = definicion["tipo_equivalente"]
+            fuente_equivalente = definicion["fuente_equivalente"]
+
+            registros.append({
+                "_origen_row": int(idx) + 1,
+                "_producto_key_origen": producto_key_origen.loc[idx],
+                "_codigo_origen": codigo_origen_real.loc[idx],
+                "equivalente_origen": col_origen,
+                "tipo_equivalente": tipo_equivalente,
+                "fuente_equivalente": fuente_equivalente,
+                "referencia_equivalente": referencia,
+                "marca_equivalente": marca,
+                "verificado": verificado,
+                "link_proveedor": link_proveedor,
+                "estado_equivalente": estado_equivalente(
+                    referencia_equivalente=referencia,
+                    tipo_equivalente=tipo_equivalente,
+                    verificado=verificado,
+                    link_proveedor=link_proveedor,
+                ),
+            })
+
+    columnas = [
+        "_origen_row",
+        "_producto_key_origen",
+        "_codigo_origen",
+        "equivalente_origen",
+        "tipo_equivalente",
+        "fuente_equivalente",
+        "referencia_equivalente",
+        "marca_equivalente",
+        "verificado",
+        "link_proveedor",
+        "estado_equivalente",
+    ]
+
+    registros_tabla = pd.DataFrame(registros, columns=columnas)
+
+    estadisticas = {
+        "columnas_procesadas": columnas_procesadas,
+        "columnas_no_encontradas": columnas_no_encontradas,
+        "campos_destino_vacios": campos_destino_vacios,
+        "modo_generacion": "VERTICAL_POR_EQUIVALENTE_ORIGEN",
+    }
+
+    return registros_tabla, estadisticas
+
+
 def generar_tabla_horizontal(
     df_origen: pd.DataFrame,
     grupo: pd.DataFrame,
@@ -1276,6 +1496,17 @@ def generar_tablas_normalizadas(
 
         elif tabla_norm == "producto_certificado":
             registros_tabla, estadisticas = generar_producto_certificado_vertical(
+                df_origen=df_origen,
+                grupo=grupo,
+                columnas_origen_norm=columnas_origen_norm,
+                producto_key_origen=producto_key_origen,
+                codigo_origen_real=codigo_origen_real,
+                tabla_destino=tabla_destino,
+                errores=errores,
+            )
+
+        elif tabla_norm == "producto_equivalente":
+            registros_tabla, estadisticas = generar_producto_equivalente_vertical(
                 df_origen=df_origen,
                 grupo=grupo,
                 columnas_origen_norm=columnas_origen_norm,
