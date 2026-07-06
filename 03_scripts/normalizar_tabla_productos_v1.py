@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 
 VALORES_NO_MATERIALES = {
@@ -50,6 +50,7 @@ COLUMNAS_PROVEEDOR_MATERIALES = {
     "codigo_proveedor",
     "referencia_proveedor",
     "link",
+    "url",
     "url_proveedor",
     "link_proveedor",
     "stock_rectificado",
@@ -79,7 +80,11 @@ COLUMNAS_INVENTARIO_TEXTO_MATERIALES = {
 }
 
 
-COLUMNAS_TRAZABILIDAD = {"_origen_row", "_codigo_origen"}
+COLUMNAS_TRAZABILIDAD = {
+    "_origen_row",
+    "_producto_key_origen",
+    "_codigo_origen",
+}
 
 
 def normalizar_nombre_columna(texto: str) -> str:
@@ -197,6 +202,7 @@ def cargar_mapeo(path_mapeo: Path) -> pd.DataFrame:
     df["COLUMNA_ORIGEN_NORM"] = df["COLUMNA_ORIGEN"].map(normalizar_nombre_columna)
     df["TABLA_DESTINO"] = df["TABLA_DESTINO"].astype(str).str.strip()
     df["CAMPO_DESTINO"] = df["CAMPO_DESTINO"].astype(str).str.strip()
+    df["CAMPO_DESTINO_NORM"] = df["CAMPO_DESTINO"].map(normalizar_nombre_materialidad)
     df["TRANSFORMACION"] = df["TRANSFORMACION"].astype(str).str.strip()
 
     return df
@@ -233,25 +239,10 @@ def aplicar_transformacion(valor, transformacion: str):
     return valor
 
 
-def detectar_columna_codigo(df_origen: pd.DataFrame) -> str | None:
-    """
-    Busca una columna de código para conservar trazabilidad entre tablas.
-    """
-    candidatos = ["CODIGO", "CÓDIGO", "ID_PRODUCTO", "PRODUCTO_ID", "COD_PRODUCTO"]
-    cols_norm = {normalizar_nombre_columna(c): c for c in df_origen.columns}
-
-    for candidato in candidatos:
-        key = normalizar_nombre_columna(candidato)
-        if key in cols_norm:
-            return cols_norm[key]
-
-    return None
-
-
 def valor_es_material(valor) -> bool:
     """
     Indica si un valor aporta información real.
-    Se usa para no generar filas solo por ceros, NO, false o vacíos.
+    Se usa para no generar filas solo por ceros, NO, false, NULL o vacíos.
     """
     if valor is None:
         return False
@@ -293,6 +284,103 @@ def valor_es_numero_positivo(valor) -> bool:
         return float(texto) > 0
     except ValueError:
         return False
+
+
+def detectar_columna_codigo(df_origen: pd.DataFrame) -> str | None:
+    """
+    Busca la columna de CODIGO real de ViaIndustrial.
+
+    Importante:
+    CODIGO no se reemplaza con ITEM ni REFERENCIA.
+    CODIGO representa el código público/comercial real del producto cuando existe.
+    """
+    candidatos = ["CODIGO", "CÓDIGO"]
+
+    cols_norm = {
+        normalizar_nombre_columna(c): c for c in df_origen.columns
+    }
+
+    for candidato in candidatos:
+        key = normalizar_nombre_columna(candidato)
+        if key in cols_norm:
+            return cols_norm[key]
+
+    return None
+
+
+def construir_codigo_origen_real(
+    df_origen: pd.DataFrame,
+    columna_codigo: str | None,
+) -> pd.Series:
+    """
+    Construye _codigo_origen usando únicamente CODIGO real.
+
+    No usa ITEM ni REFERENCIA como reemplazo, porque eso mezclaría conceptos:
+    - CODIGO = código público/comercial de ViaIndustrial.
+    - ITEM = identificador interno/ERP.
+    - REFERENCIA = referencia comercial o técnica.
+    """
+    resultado = pd.Series([""] * len(df_origen), index=df_origen.index, dtype=str)
+
+    if not columna_codigo:
+        return resultado
+
+    serie = df_origen[columna_codigo].fillna("").astype(str).str.strip()
+    mask_material = serie.map(valor_es_material)
+
+    resultado.loc[mask_material] = serie.loc[mask_material]
+
+    return resultado
+
+
+def construir_producto_key_origen(df_origen: pd.DataFrame) -> pd.Series:
+    """
+    Construye una llave técnica de trazabilidad entre tablas derivadas.
+
+    No reemplaza el código real de ViaIndustrial.
+
+    Prioridad:
+    1. CODIGO, si existe y es material.
+    2. ITEM, si CODIGO no existe o no es material.
+    3. REFERENCIA, si ITEM tampoco existe.
+    4. ROW_n como último recurso.
+
+    Esta llave sirve para relacionar CSV derivados del piloto.
+    No debe presentarse como código oficial del producto.
+    """
+    candidatos = ["CODIGO", "CÓDIGO", "ITEM", "REFERENCIA"]
+
+    columnas_origen_norm = {
+        normalizar_nombre_columna(c): c for c in df_origen.columns
+    }
+
+    resultado = pd.Series([""] * len(df_origen), index=df_origen.index, dtype=str)
+
+    for candidato in candidatos:
+        candidato_norm = normalizar_nombre_columna(candidato)
+
+        if candidato_norm not in columnas_origen_norm:
+            continue
+
+        col_real = columnas_origen_norm[candidato_norm]
+        serie = df_origen[col_real].fillna("").astype(str).str.strip()
+
+        mask_resultado_vacio = resultado.map(lambda valor: not valor_es_material(valor))
+        mask_serie_material = serie.map(valor_es_material)
+
+        mask_usar = mask_resultado_vacio & mask_serie_material
+
+        resultado.loc[mask_usar] = serie.loc[mask_usar]
+
+    # Último recurso: número de fila de origen.
+    mask_sin_id = resultado.map(lambda valor: not valor_es_material(valor))
+    resultado.loc[mask_sin_id] = (
+        pd.Series(range(1, len(df_origen) + 1), index=df_origen.index)
+        .astype(str)
+        .map(lambda n: f"ROW_{n}")
+    )
+
+    return resultado
 
 
 def fila_tiene_campos_materiales(fila: pd.Series, campos_objetivo: set[str]) -> bool:
@@ -355,11 +443,42 @@ def fila_tiene_materialidad(tabla_destino: str, fila: pd.Series, campos_negocio:
 
     return any(valor_es_material(valor) for valor in fila_negocio)
 
+
+def asignar_campo_destino(
+    registros_tabla: pd.DataFrame,
+    campo_destino: str,
+    serie_nueva: pd.Series,
+) -> None:
+    """
+    Asigna valores a un campo destino sin perder información material.
+
+    Si el campo no existe, lo crea.
+    Si el campo ya existe, solo reemplaza valores vacíos/no materiales
+    con valores nuevos que sí sean materiales.
+
+    Esto evita que una columna origen posterior vacía, 0, NO o NULL
+    sobrescriba un dato real ya cargado desde otra columna origen.
+    """
+    if campo_destino not in registros_tabla.columns:
+        registros_tabla[campo_destino] = serie_nueva
+        return
+
+    mask_actual_no_material = registros_tabla[campo_destino].map(
+        lambda valor: not valor_es_material(valor)
+    )
+    mask_nuevo_material = serie_nueva.map(valor_es_material)
+
+    mask_reemplazar = mask_actual_no_material & mask_nuevo_material
+
+    registros_tabla.loc[mask_reemplazar, campo_destino] = serie_nueva[mask_reemplazar]
+
+
 def generar_producto_precio_vertical(
     df_origen: pd.DataFrame,
     grupo: pd.DataFrame,
     columnas_origen_norm: dict[str, str],
-    columna_codigo: str | None,
+    producto_key_origen: pd.Series,
+    codigo_origen_real: pd.Series,
     tabla_destino: str,
     errores: list[dict],
 ) -> tuple[pd.DataFrame, dict]:
@@ -379,9 +498,7 @@ def generar_producto_precio_vertical(
     campos_destino_vacios = 0
 
     reglas_valor = grupo[
-        grupo["CAMPO_DESTINO"].map(normalizar_nombre_materialidad).isin(
-            {"valor", "precio", "monto"}
-        )
+        grupo["CAMPO_DESTINO_NORM"].isin({"valor", "precio", "monto"})
     ].copy()
 
     for _, regla in reglas_valor.iterrows():
@@ -420,22 +537,23 @@ def generar_producto_precio_vertical(
         mask_material = serie.map(valor_es_numero_positivo)
 
         for idx in serie[mask_material].index:
-            registro = {
+            registros.append({
                 "_origen_row": int(idx) + 1,
+                "_producto_key_origen": producto_key_origen.loc[idx],
+                "_codigo_origen": codigo_origen_real.loc[idx],
                 "valor": serie.loc[idx],
                 "fuente": col_origen,
                 "moneda": "",
-            }
+            })
 
-            if columna_codigo:
-                registro["_codigo_origen"] = df_origen.at[idx, columna_codigo]
-
-            registros.append(registro)
-
-    columnas = ["_origen_row"]
-    if columna_codigo:
-        columnas.append("_codigo_origen")
-    columnas.extend(["valor", "fuente", "moneda"])
+    columnas = [
+        "_origen_row",
+        "_producto_key_origen",
+        "_codigo_origen",
+        "valor",
+        "fuente",
+        "moneda",
+    ]
 
     registros_tabla = pd.DataFrame(registros, columns=columnas)
 
@@ -448,34 +566,7 @@ def generar_producto_precio_vertical(
 
     return registros_tabla, estadisticas
 
-def asignar_campo_destino(
-    registros_tabla: pd.DataFrame,
-    campo_destino: str,
-    serie_nueva: pd.Series,
-) -> None:
-    """
-    Asigna valores a un campo destino sin perder información material.
 
-    Si el campo no existe, lo crea.
-    Si el campo ya existe, solo reemplaza valores vacíos/no materiales
-    con valores nuevos que sí sean materiales.
-
-    Esto evita que una columna origen posterior vacía, 0 o NO
-    sobrescriba un dato real ya cargado desde otra columna origen.
-    """
-    if campo_destino not in registros_tabla.columns:
-        registros_tabla[campo_destino] = serie_nueva
-        return
-
-    mask_actual_no_material = registros_tabla[campo_destino].map(
-        lambda valor: not valor_es_material(valor)
-    )
-    mask_nuevo_material = serie_nueva.map(valor_es_material)
-
-    mask_reemplazar = mask_actual_no_material & mask_nuevo_material
-
-    registros_tabla.loc[mask_reemplazar, campo_destino] = serie_nueva[mask_reemplazar]
-    
 def generar_tablas_normalizadas(
     df_origen: pd.DataFrame,
     df_mapeo: pd.DataFrame,
@@ -491,6 +582,11 @@ def generar_tablas_normalizadas(
     }
 
     columna_codigo = detectar_columna_codigo(df_origen)
+    codigo_origen_real = construir_codigo_origen_real(
+        df_origen=df_origen,
+        columna_codigo=columna_codigo,
+    )
+    producto_key_origen = construir_producto_key_origen(df_origen)
 
     reportes_tablas = []
     errores = []
@@ -501,116 +597,95 @@ def generar_tablas_normalizadas(
 
     for tabla_destino, grupo in df_mapeo.groupby("TABLA_DESTINO", dropna=False):
         tabla_destino = str(tabla_destino or "").strip()
-        
         tabla_norm = limpiar_nombre_archivo(tabla_destino)
 
         if tabla_destino.upper() in tablas_a_ignorar:
             continue
-        
+
+        modo_generacion = "HORIZONTAL"
+        columnas_procesadas = 0
+        columnas_no_encontradas = 0
+        campos_destino_vacios = 0
+
         if tabla_norm == "producto_precio":
             registros_tabla, estadisticas = generar_producto_precio_vertical(
                 df_origen=df_origen,
                 grupo=grupo,
                 columnas_origen_norm=columnas_origen_norm,
-                columna_codigo=columna_codigo,
+                producto_key_origen=producto_key_origen,
+                codigo_origen_real=codigo_origen_real,
                 tabla_destino=tabla_destino,
                 errores=errores,
             )
+            columnas_procesadas = estadisticas["columnas_procesadas"]
+            columnas_no_encontradas = estadisticas["columnas_no_encontradas"]
+            campos_destino_vacios = estadisticas["campos_destino_vacios"]
+            modo_generacion = estadisticas["modo_generacion"]
 
-            nombre_archivo = limpiar_nombre_archivo(tabla_destino) + ".csv"
-            path_salida = salida_dir / nombre_archivo
+        else:
+            registros_tabla = pd.DataFrame()
+            registros_tabla["_origen_row"] = range(1, len(df_origen) + 1)
+            registros_tabla["_producto_key_origen"] = producto_key_origen
+            registros_tabla["_codigo_origen"] = codigo_origen_real
 
-            registros_tabla.to_csv(
-                path_salida,
-                index=False,
-                sep=";",
-                encoding="utf-8-sig",
-            )
+            for _, regla in grupo.iterrows():
+                col_origen = str(regla["COLUMNA_ORIGEN"]).strip()
+                col_origen_norm = normalizar_nombre_columna(col_origen)
+                campo_destino = str(regla["CAMPO_DESTINO"]).strip()
+                transformacion = str(regla["TRANSFORMACION"]).strip()
 
-            tablas_generadas.append(str(path_salida))
+                if not campo_destino:
+                    campos_destino_vacios += 1
+                    errores.append({
+                        "tabla_destino": tabla_destino,
+                        "columna_origen": col_origen,
+                        "error": "SIN_CAMPO_DESTINO",
+                        "detalle": "La regla no tiene CAMPO_DESTINO.",
+                    })
+                    continue
 
-            reportes_tablas.append({
-                "tabla_destino": tabla_destino,
-                "archivo_salida": str(path_salida),
-                "modo_generacion": estadisticas["modo_generacion"],
-                "columnas_mapeadas_para_tabla": int(len(grupo)),
-                "columnas_procesadas": int(estadisticas["columnas_procesadas"]),
-                "columnas_no_encontradas": int(estadisticas["columnas_no_encontradas"]),
-                "campos_destino_vacios": int(estadisticas["campos_destino_vacios"]),
-                "filas_origen": int(len(df_origen)),
-                "filas_generadas": int(len(registros_tabla)),
-            })
+                if col_origen_norm not in columnas_origen_norm:
+                    columnas_no_encontradas += 1
+                    registros_tabla[campo_destino] = ""
+                    errores.append({
+                        "tabla_destino": tabla_destino,
+                        "columna_origen": col_origen,
+                        "campo_destino": campo_destino,
+                        "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                        "detalle": "La columna del mapeo no existe en el archivo origen.",
+                    })
+                    continue
 
-            continue
+                col_real = columnas_origen_norm[col_origen_norm]
+                serie_transformada = df_origen[col_real].map(
+                    lambda v: aplicar_transformacion(v, transformacion)
+                )
 
-        registros_tabla = pd.DataFrame()
-        registros_tabla["_origen_row"] = range(1, len(df_origen) + 1)
+                asignar_campo_destino(
+                    registros_tabla=registros_tabla,
+                    campo_destino=campo_destino,
+                    serie_nueva=serie_transformada,
+                )
 
-        if columna_codigo:
-            registros_tabla["_codigo_origen"] = df_origen[columna_codigo].fillna("")
+                columnas_procesadas += 1
 
-        columnas_procesadas = 0
-        columnas_no_encontradas = 0
-        campos_destino_vacios = 0
+            # Eliminar filas sin materialidad real, conservando trazabilidad.
+            # Antes cualquier valor no vacío generaba fila; eso incluía 0, 0.00, NO, NULL y flags.
+            campos_negocio = [
+                c for c in registros_tabla.columns
+                if c not in COLUMNAS_TRAZABILIDAD
+            ]
 
-        for _, regla in grupo.iterrows():
-            col_origen = str(regla["COLUMNA_ORIGEN"]).strip()
-            col_origen_norm = normalizar_nombre_columna(col_origen)
-            campo_destino = str(regla["CAMPO_DESTINO"]).strip()
-            transformacion = str(regla["TRANSFORMACION"]).strip()
-
-            if not campo_destino:
-                campos_destino_vacios += 1
-                errores.append({
-                    "tabla_destino": tabla_destino,
-                    "columna_origen": col_origen,
-                    "error": "SIN_CAMPO_DESTINO",
-                    "detalle": "La regla no tiene CAMPO_DESTINO.",
-                })
-                continue
-
-            if col_origen_norm not in columnas_origen_norm:
-                columnas_no_encontradas += 1
-                registros_tabla[campo_destino] = ""
-                errores.append({
-                    "tabla_destino": tabla_destino,
-                    "columna_origen": col_origen,
-                    "campo_destino": campo_destino,
-                    "error": "COLUMNA_ORIGEN_NO_EXISTE",
-                    "detalle": "La columna del mapeo no existe en el archivo origen.",
-                })
-                continue
-
-            col_real = columnas_origen_norm[col_origen_norm]
-            serie_transformada = df_origen[col_real].map(
-                lambda v: aplicar_transformacion(v, transformacion)
-            )
-
-            asignar_campo_destino(
-                registros_tabla=registros_tabla,
-                campo_destino=campo_destino,
-                serie_nueva=serie_transformada,
-            )
-
-            columnas_procesadas += 1
-
-        # Eliminar filas sin materialidad real, conservando trazabilidad.
-        # Antes cualquier valor no vacío generaba fila; eso incluía 0, 0.00, NO y flags.
-        campos_negocio = [
-            c for c in registros_tabla.columns
-            if c not in COLUMNAS_TRAZABILIDAD
-        ]
-
-        if campos_negocio:
-            mask_con_datos = registros_tabla.apply(
-                lambda row: fila_tiene_materialidad(
-                    tabla_destino=tabla_destino,
-                    fila=row,
-                    campos_negocio=campos_negocio,
-                ),
-                axis=1,
-            )
-            registros_tabla = registros_tabla[mask_con_datos].copy()
+            if campos_negocio:
+                mask_con_datos = registros_tabla.apply(
+                    lambda row: fila_tiene_materialidad(
+                        tabla_destino=tabla_destino,
+                        fila=row,
+                        campos_negocio=campos_negocio,
+                    ),
+                    axis=1,
+                )
+                registros_tabla = registros_tabla[mask_con_datos].copy()
 
         nombre_archivo = limpiar_nombre_archivo(tabla_destino) + ".csv"
         path_salida = salida_dir / nombre_archivo
@@ -627,6 +702,7 @@ def generar_tablas_normalizadas(
         reportes_tablas.append({
             "tabla_destino": tabla_destino,
             "archivo_salida": str(path_salida),
+            "modo_generacion": modo_generacion,
             "columnas_mapeadas_para_tabla": int(len(grupo)),
             "columnas_procesadas": int(columnas_procesadas),
             "columnas_no_encontradas": int(columnas_no_encontradas),
@@ -727,12 +803,21 @@ def main():
                 "producto_proveedor",
                 "producto_inventario",
             ],
+            "producto_precio_verticalizado_por_fuente": True,
+            "producto_key_origen_generado": True,
+            "codigo_origen_solo_codigo_real": True,
         },
         "nota": (
             "Este script genera tablas derivadas desde el archivo origen y el mapeo. "
             "No modifica el archivo original ni carga datos a Azure. "
             "Desde la versión 1.1.0 aplica reglas de materialidad para evitar filas "
-            "generadas solo por ceros, NO o flags por defecto."
+            "generadas solo por ceros, NO o flags por defecto. "
+            "Desde la versión 1.2.0 PRODUCTO_PRECIO se genera en formato vertical "
+            "para evitar sobrescritura cuando varias columnas origen apuntan a valor. "
+            "Desde la versión 1.3.0 se evita que columnas posteriores no materiales "
+            "sobrescriban campos destino ya poblados con datos reales. "
+            "Desde la versión 1.4.0 se separa el código real de ViaIndustrial "
+            "(_codigo_origen) de la llave técnica de trazabilidad (_producto_key_origen)."
         ),
     }
 
