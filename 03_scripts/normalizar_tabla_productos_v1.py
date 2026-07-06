@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 
 VALORES_NO_MATERIALES = {
@@ -104,6 +104,15 @@ DOCUMENTOS_PRODUCTO_DEFINICION = {
     "LINK_PROD": {"tipo_documento": "PAGINA_PRODUCTO", "idioma": ""},
     "LINK_PROD2": {"tipo_documento": "PAGINA_PRODUCTO_2", "idioma": ""},
     "LINK_PROX": {"tipo_documento": "PROXIMO", "idioma": ""},
+}
+
+
+CERTIFICADOS_PRODUCTO_DEFINICION = {
+    "CERTIFICADO_1": {"tipo_certificado": "GENERAL"},
+    "CERTIFICADO_2": {"tipo_certificado": "GENERAL"},
+    "CERTIFICADO_3": {"tipo_certificado": "GENERAL"},
+    "CERTIFICADO_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
+    "COD_PROV_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
 }
 
 
@@ -913,6 +922,196 @@ def generar_producto_documento_vertical(
     return registros_tabla, estadisticas
 
 
+
+def obtener_definicion_certificado(columna_origen: str) -> dict:
+    """
+    Devuelve tipo_certificado ?nicamente para columnas de certificado revisadas.
+    No deduce certificaciones por intuici?n desde el texto.
+    """
+    col = normalizar_nombre_columna(columna_origen)
+    return CERTIFICADOS_PRODUCTO_DEFINICION.get(
+        col,
+        {"tipo_certificado": ""},
+    )
+
+
+def estado_certificado(valor_certificado, cod_proveedor: str, tipo_certificado: str) -> str:
+    """
+    Estado trazable del certificado sin inventar informaci?n.
+    """
+    tiene_valor = valor_es_material(valor_certificado)
+    tiene_codigo = valor_es_material(cod_proveedor)
+
+    if tipo_certificado == "CALIBRACION":
+        if tiene_valor and tiene_codigo:
+            return "CERTIFICADO_CALIBRACION_CON_COD_PROVEEDOR"
+        if tiene_valor:
+            return "CERTIFICADO_CALIBRACION_DETECTADO"
+        if tiene_codigo:
+            return "COD_PROVEEDOR_CALIBRACION_DETECTADO"
+        return "CALIBRACION_SIN_DATO_MATERIAL"
+
+    if valor_documento_es_url_o_ruta(valor_certificado):
+        return "RUTA_CERTIFICADO_DETECTADA"
+
+    return "REFERENCIA_CERTIFICADO_LEGADA"
+
+
+def generar_producto_certificado_vertical(
+    df_origen: pd.DataFrame,
+    grupo: pd.DataFrame,
+    columnas_origen_norm: dict[str, str],
+    producto_key_origen: pd.Series,
+    codigo_origen_real: pd.Series,
+    tabla_destino: str,
+    errores: list[dict],
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Genera PRODUCTO_CERTIFICADO en formato vertical.
+
+    Decisi?n conservadora v1.8.0:
+    - CERTIFICADO_1, CERTIFICADO_2 y CERTIFICADO_3 se conservan como filas GENERAL.
+    - CERTIFICADO_CALIBRACION y COD_PROV_CALIBRACION se conservan como una fila CALIBRACION por producto cuando hay dato material.
+    - No se inventan certificados, rutas ni c?digos proveedor.
+    """
+    registros = []
+    columnas_procesadas = 0
+    columnas_no_encontradas = 0
+    campos_destino_vacios = 0
+
+    columnas_requeridas = {
+        normalizar_nombre_columna(str(r["COLUMNA_ORIGEN"]).strip()): str(r["COLUMNA_ORIGEN"]).strip()
+        for _, r in grupo.iterrows()
+    }
+
+    # Certificados generales: una fila por producto y por columna CERTIFICADO_1/2/3.
+    for col_origen in ["CERTIFICADO_1", "CERTIFICADO_2", "CERTIFICADO_3"]:
+        col_origen_norm = normalizar_nombre_columna(col_origen)
+
+        if col_origen_norm not in columnas_requeridas:
+            continue
+
+        if col_origen_norm not in columnas_origen_norm:
+            columnas_no_encontradas += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "campo_destino": "certificado",
+                "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                "detalle": "La columna del mapeo no existe en el archivo origen.",
+            })
+            continue
+
+        col_real = columnas_origen_norm[col_origen_norm]
+        serie = df_origen[col_real].map(lambda v: aplicar_transformacion(v, ""))
+        columnas_procesadas += 1
+
+        mask_material = serie.map(valor_es_material)
+
+        for idx in serie[mask_material].index:
+            valor = str(serie.loc[idx]).strip()
+            es_ruta = valor_documento_es_url_o_ruta(valor)
+
+            registros.append({
+                "_origen_row": int(idx) + 1,
+                "_producto_key_origen": producto_key_origen.loc[idx],
+                "_codigo_origen": codigo_origen_real.loc[idx],
+                "certificado_origen": col_origen,
+                "tipo_certificado": "GENERAL",
+                "valor_certificado": valor,
+                "url_o_ruta": valor if es_ruta else "",
+                "referencia_certificado": "" if es_ruta else valor,
+                "cod_proveedor": "",
+                "es_url_o_ruta": "SI" if es_ruta else "NO",
+                "estado_certificado": estado_certificado(valor, "", "GENERAL"),
+            })
+
+    # Certificado de calibraci?n: una fila por producto si hay certificado o c?digo proveedor.
+    col_cert_cal_norm = normalizar_nombre_columna("CERTIFICADO_CALIBRACION")
+    col_cod_cal_norm = normalizar_nombre_columna("COD_PROV_CALIBRACION")
+
+    serie_cert_cal = pd.Series([""] * len(df_origen), index=df_origen.index, dtype=str)
+    serie_cod_cal = pd.Series([""] * len(df_origen), index=df_origen.index, dtype=str)
+
+    if col_cert_cal_norm in columnas_requeridas:
+        if col_cert_cal_norm in columnas_origen_norm:
+            serie_cert_cal = df_origen[columnas_origen_norm[col_cert_cal_norm]].map(
+                lambda v: aplicar_transformacion(v, "")
+            )
+            columnas_procesadas += 1
+        else:
+            columnas_no_encontradas += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": "CERTIFICADO_CALIBRACION",
+                "campo_destino": "certificado / cod_proveedor",
+                "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                "detalle": "La columna del mapeo no existe en el archivo origen.",
+            })
+
+    if col_cod_cal_norm in columnas_requeridas:
+        if col_cod_cal_norm in columnas_origen_norm:
+            serie_cod_cal = df_origen[columnas_origen_norm[col_cod_cal_norm]].map(
+                lambda v: aplicar_transformacion(v, "")
+            )
+            columnas_procesadas += 1
+        else:
+            columnas_no_encontradas += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": "COD_PROV_CALIBRACION",
+                "campo_destino": "certificado / cod_proveedor",
+                "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                "detalle": "La columna del mapeo no existe en el archivo origen.",
+            })
+
+    mask_calibracion = serie_cert_cal.map(valor_es_material) | serie_cod_cal.map(valor_es_material)
+
+    for idx in serie_cert_cal[mask_calibracion].index:
+        valor = str(serie_cert_cal.loc[idx]).strip()
+        cod_proveedor = str(serie_cod_cal.loc[idx]).strip()
+        es_ruta = valor_documento_es_url_o_ruta(valor)
+
+        registros.append({
+            "_origen_row": int(idx) + 1,
+            "_producto_key_origen": producto_key_origen.loc[idx],
+            "_codigo_origen": codigo_origen_real.loc[idx],
+            "certificado_origen": "CERTIFICADO_CALIBRACION",
+            "tipo_certificado": "CALIBRACION",
+            "valor_certificado": valor,
+            "url_o_ruta": valor if es_ruta else "",
+            "referencia_certificado": "" if es_ruta else valor,
+            "cod_proveedor": cod_proveedor if valor_es_material(cod_proveedor) else "",
+            "es_url_o_ruta": "SI" if es_ruta else "NO",
+            "estado_certificado": estado_certificado(valor, cod_proveedor, "CALIBRACION"),
+        })
+
+    columnas = [
+        "_origen_row",
+        "_producto_key_origen",
+        "_codigo_origen",
+        "certificado_origen",
+        "tipo_certificado",
+        "valor_certificado",
+        "url_o_ruta",
+        "referencia_certificado",
+        "cod_proveedor",
+        "es_url_o_ruta",
+        "estado_certificado",
+    ]
+
+    registros_tabla = pd.DataFrame(registros, columns=columnas)
+
+    estadisticas = {
+        "columnas_procesadas": columnas_procesadas,
+        "columnas_no_encontradas": columnas_no_encontradas,
+        "campos_destino_vacios": campos_destino_vacios,
+        "modo_generacion": "VERTICAL_POR_CERTIFICADO_ORIGEN",
+    }
+
+    return registros_tabla, estadisticas
+
+
 def generar_tabla_horizontal(
     df_origen: pd.DataFrame,
     grupo: pd.DataFrame,
@@ -1066,6 +1265,17 @@ def generar_tablas_normalizadas(
 
         elif tabla_norm == "producto_documento":
             registros_tabla, estadisticas = generar_producto_documento_vertical(
+                df_origen=df_origen,
+                grupo=grupo,
+                columnas_origen_norm=columnas_origen_norm,
+                producto_key_origen=producto_key_origen,
+                codigo_origen_real=codigo_origen_real,
+                tabla_destino=tabla_destino,
+                errores=errores,
+            )
+
+        elif tabla_norm == "producto_certificado":
+            registros_tabla, estadisticas = generar_producto_certificado_vertical(
                 df_origen=df_origen,
                 grupo=grupo,
                 columnas_origen_norm=columnas_origen_norm,
