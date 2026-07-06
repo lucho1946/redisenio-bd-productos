@@ -6,7 +6,7 @@ from datetime import datetime
 import pandas as pd
 
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
 def leer_json(path: Path) -> dict:
@@ -105,6 +105,7 @@ def generar_markdown(reporte: dict, detalle: pd.DataFrame, piloto_nombre: str) -
     precio = obtener_filas_tabla(detalle, "PRODUCTO_PRECIO")
     proveedor = obtener_filas_tabla(detalle, "PRODUCTO_PROVEEDOR")
     inventario = obtener_filas_tabla(detalle, "PRODUCTO_INVENTARIO")
+    parametro = obtener_filas_tabla(detalle, "PRODUCTO_PARAMETRO")
 
     filas_origen = reporte.get("filas_origen", "")
     columnas_origen = reporte.get("columnas_origen", "")
@@ -168,6 +169,10 @@ def generar_markdown(reporte: dict, detalle: pd.DataFrame, piloto_nombre: str) -
         f"| PRODUCTO_INVENTARIO | {texto(inventario, 'modo_generacion', 'HORIZONTAL')} | "
         f"{valor_entero(inventario, 'filas_generadas')} | {observacion_inventario(inventario)} |"
     )
+    lineas.append(
+        f"| PRODUCTO_PARAMETRO | {texto(parametro, 'modo_generacion', 'VERTICAL_POR_PARAMETRO_ORIGEN')} | "
+        f"{valor_entero(parametro, 'filas_generadas')} | Se corrigio estructuralmente para conservar una fila por producto y por valor de parametro encontrado. No se inventa parametro_id; queda pendiente de homologacion oficial. |"
+    )
     lineas.append("")
     lineas.append("## 4. Problemas detectados y correcciones aplicadas")
     lineas.append("")
@@ -198,7 +203,18 @@ def generar_markdown(reporte: dict, detalle: pd.DataFrame, piloto_nombre: str) -
     lineas.append("")
     lineas.append(texto_inventario(version_script, inventario))
     lineas.append("")
-    lineas.append("### 4.5 Identificadores")
+    lineas.append("### 4.5 Parametros")
+    lineas.append("")
+    lineas.append(
+        "Se detecto que `PRODUCTO_PARAMETRO` estaba quedando como una fila por producto, aunque el mapeo indica "
+        "que campos como `CAR_IND_*`, `CAR_COM_*` y `DIMENSION` deben comportarse como valores de parametro. "
+        "En la version 1.6.0 se corrigio la estructura a formato vertical por `parametro_origen`: una fila por "
+        "producto y por valor material encontrado. Como las columnas `ID_PARAMETRO_*` no traen datos en la muestra, "
+        "no se inventa `parametro_id`; el campo queda vacio y marcado como `PENDIENTE_PARAMETRO_ID`."
+    )
+    lineas.append("")
+
+    lineas.append("### 4.6 Identificadores")
     lineas.append("")
     lineas.append(
         "Se separó el código real de ViaIndustrial de una llave técnica de trazabilidad. `codigo` y `_codigo_origen` "
@@ -215,6 +231,7 @@ def generar_markdown(reporte: dict, detalle: pd.DataFrame, piloto_nombre: str) -
     lineas.append("- No escalar a toda la tabla hasta completar auditoría de contenido.")
     lineas.append(decision_inventario(inventario))
     lineas.append("- Mantener `PRODUCTO_PRECIO` verticalizado por fuente.")
+    lineas.append("- Mantener `PRODUCTO_PARAMETRO` verticalizado por `parametro_origen`, sin inventar `parametro_id`.")
     lineas.append("- Mantener separados `codigo`, `item_erp`, `referencia` y `_producto_key_origen`.")
     lineas.append("")
     lineas.append("## 6. Pendientes antes de escalar")
@@ -253,12 +270,12 @@ def main():
     )
     parser.add_argument(
         "--piloto",
-        default="top1000_v7",
+        default="productos_hugo_con_nombre_top1000_v3",
         help="Nombre del piloto reportado",
     )
     parser.add_argument(
         "--out",
-        default="05_reportes/informe_auditoria_piloto_normalizacion_productos_v7.md",
+        default="05_reportes/informe_auditoria_piloto_normalizacion_productos_v3.md",
         help="Ruta del informe Markdown de salida",
     )
 

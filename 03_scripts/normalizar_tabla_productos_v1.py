@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 
 VALORES_NO_MATERIALES = {
@@ -585,6 +585,124 @@ def generar_producto_precio_vertical(
     return registros_tabla, estadisticas
 
 
+
+def detectar_tipo_parametro_origen(columna_origen: str) -> str:
+    """
+    Clasifica la columna origen sin inventar el par?metro real.
+
+    Esto NO define el nombre oficial del par?metro.
+    Solo conserva el tipo t?cnico de origen para trazabilidad.
+    """
+    col = normalizar_nombre_columna(columna_origen)
+
+    if col.startswith("CAR_IND_"):
+        return "INDUSTRIAL"
+
+    if col.startswith("CAR_COM_"):
+        return "COMERCIAL"
+
+    if col == "DIMENSION":
+        return "DIMENSION"
+
+    return "ORIGEN_DESCONOCIDO"
+
+
+def generar_producto_parametro_vertical(
+    df_origen: pd.DataFrame,
+    grupo: pd.DataFrame,
+    columnas_origen_norm: dict[str, str],
+    producto_key_origen: pd.Series,
+    codigo_origen_real: pd.Series,
+    tabla_destino: str,
+    errores: list[dict],
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Genera PRODUCTO_PARAMETRO en formato vertical.
+
+    Decisi?n conservadora:
+    - Se conserva cada valor material de CAR_IND_*, CAR_COM_* y DIMENSION.
+    - Se guarda la columna origen como parametro_origen.
+    - No se inventa parametro_id.
+    - parametro_id (FK) queda vac?o hasta tener fuente oficial.
+    """
+    registros = []
+    columnas_procesadas = 0
+    columnas_no_encontradas = 0
+    campos_destino_vacios = 0
+
+    reglas_valor = grupo[
+        grupo["CAMPO_DESTINO_NORM"].isin({"valor_texto", "valor"})
+    ].copy()
+
+    for _, regla in reglas_valor.iterrows():
+        col_origen = str(regla["COLUMNA_ORIGEN"]).strip()
+        col_origen_norm = normalizar_nombre_columna(col_origen)
+        campo_destino = str(regla["CAMPO_DESTINO"]).strip()
+        transformacion = str(regla["TRANSFORMACION"]).strip()
+
+        if not campo_destino:
+            campos_destino_vacios += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "error": "SIN_CAMPO_DESTINO",
+                "detalle": "La regla no tiene CAMPO_DESTINO.",
+            })
+            continue
+
+        if col_origen_norm not in columnas_origen_norm:
+            columnas_no_encontradas += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "campo_destino": campo_destino,
+                "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                "detalle": "La columna del mapeo no existe en el archivo origen.",
+            })
+            continue
+
+        col_real = columnas_origen_norm[col_origen_norm]
+        serie = df_origen[col_real].map(
+            lambda v: aplicar_transformacion(v, transformacion)
+        )
+
+        columnas_procesadas += 1
+        mask_material = serie.map(valor_es_material)
+
+        for idx in serie[mask_material].index:
+            registros.append({
+                "_origen_row": int(idx) + 1,
+                "_producto_key_origen": producto_key_origen.loc[idx],
+                "_codigo_origen": codigo_origen_real.loc[idx],
+                "parametro_origen": col_origen,
+                "tipo_parametro_origen": detectar_tipo_parametro_origen(col_origen),
+                "valor_texto": serie.loc[idx],
+                "parametro_id (FK)": "",
+                "estado_parametro": "PENDIENTE_PARAMETRO_ID",
+            })
+
+    columnas = [
+        "_origen_row",
+        "_producto_key_origen",
+        "_codigo_origen",
+        "parametro_origen",
+        "tipo_parametro_origen",
+        "valor_texto",
+        "parametro_id (FK)",
+        "estado_parametro",
+    ]
+
+    registros_tabla = pd.DataFrame(registros, columns=columnas)
+
+    estadisticas = {
+        "columnas_procesadas": columnas_procesadas,
+        "columnas_no_encontradas": columnas_no_encontradas,
+        "campos_destino_vacios": campos_destino_vacios,
+        "modo_generacion": "VERTICAL_POR_PARAMETRO_ORIGEN",
+    }
+
+    return registros_tabla, estadisticas
+
 def generar_tablas_normalizadas(
     df_origen: pd.DataFrame,
     df_mapeo: pd.DataFrame,
@@ -627,6 +745,21 @@ def generar_tablas_normalizadas(
 
         if tabla_norm == "producto_precio":
             registros_tabla, estadisticas = generar_producto_precio_vertical(
+                df_origen=df_origen,
+                grupo=grupo,
+                columnas_origen_norm=columnas_origen_norm,
+                producto_key_origen=producto_key_origen,
+                codigo_origen_real=codigo_origen_real,
+                tabla_destino=tabla_destino,
+                errores=errores,
+            )
+            columnas_procesadas = estadisticas["columnas_procesadas"]
+            columnas_no_encontradas = estadisticas["columnas_no_encontradas"]
+            campos_destino_vacios = estadisticas["campos_destino_vacios"]
+            modo_generacion = estadisticas["modo_generacion"]
+
+        elif tabla_norm == "producto_parametro":
+            registros_tabla, estadisticas = generar_producto_parametro_vertical(
                 df_origen=df_origen,
                 grupo=grupo,
                 columnas_origen_norm=columnas_origen_norm,
@@ -824,8 +957,11 @@ def main():
                 "producto_precio",
                 "producto_proveedor",
                 "producto_inventario",
+                "producto_parametro",
             ],
             "producto_precio_verticalizado_por_fuente": True,
+            "producto_parametro_verticalizado_por_origen": True,
+            "producto_parametro_parametro_id_inventado": False,
             "producto_key_origen_generado": True,
             "codigo_origen_solo_codigo_real": True,
         },
