@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 
-VERSION = "1.13.0"
+VERSION = "1.14.0"
 
 
 VALORES_NO_MATERIALES = {
@@ -114,6 +114,26 @@ CERTIFICADOS_PRODUCTO_DEFINICION = {
     "CERTIFICADO_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
     "COD_PROV_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
 }
+
+
+CATEGORIAS_PRODUCTO_DEFINICION = [
+    {"categoria_origen": "CLASIFICACION_1", "tipo_categoria": "CLASIFICACION", "orden": 1, "es_principal": "1"},
+    {"categoria_origen": "CLASIFICACION_2", "tipo_categoria": "CLASIFICACION", "orden": 2, "es_principal": "0"},
+    {"categoria_origen": "CLASIFICACION_3", "tipo_categoria": "CLASIFICACION", "orden": 3, "es_principal": "0"},
+    {"categoria_origen": "CLASIFICACION_4", "tipo_categoria": "CLASIFICACION", "orden": 4, "es_principal": "0"},
+    {"categoria_origen": "CLASIFICACION_5", "tipo_categoria": "CLASIFICACION", "orden": 5, "es_principal": "0"},
+    {"categoria_origen": "CLASIFICACION_6", "tipo_categoria": "CLASIFICACION", "orden": 6, "es_principal": "0"},
+    {"categoria_origen": "CLASIFICACION_7", "tipo_categoria": "CLASIFICACION", "orden": 7, "es_principal": "0"},
+    {"categoria_origen": "CLASIFICACION_8", "tipo_categoria": "CLASIFICACION", "orden": 8, "es_principal": "0"},
+    {"categoria_origen": "CLASIFICACION_9", "tipo_categoria": "CLASIFICACION", "orden": 9, "es_principal": "0"},
+    {"categoria_origen": "CLASIFICACION_10", "tipo_categoria": "CLASIFICACION", "orden": 10, "es_principal": "0"},
+    {"categoria_origen": "CLASIFICACION_11", "tipo_categoria": "CLASIFICACION", "orden": 11, "es_principal": "0"},
+    {"categoria_origen": "MERCA_CLI", "tipo_categoria": "MERCADO", "orden": 1, "es_principal": "0"},
+    {"categoria_origen": "CLASI_MERCA", "tipo_categoria": "MERCADO", "orden": 2, "es_principal": "0"},
+    {"categoria_origen": "PSO", "tipo_categoria": "MERCADO", "orden": 3, "es_principal": "0"},
+    {"categoria_origen": "MERCA_CLI_MERCA", "tipo_categoria": "MERCADO", "orden": 4, "es_principal": "0"},
+    {"categoria_origen": "CLASIFICACION_WO", "tipo_categoria": "ERP_WO", "orden": 1, "es_principal": "0"},
+]
 
 
 PROVEEDORES_PRODUCTO_DEFINICION = [
@@ -1354,6 +1374,111 @@ def estado_producto_proveedor(proveedor_id, codigo_proveedor, link, stock_rectif
     return "SIN_PROVEEDOR"
 
 
+
+def estado_producto_categoria(categoria_id) -> str:
+    """
+    Estado trazable de producto-categoria sin inventar categoria_id.
+    """
+    if valor_es_material(categoria_id):
+        return "CATEGORIA_DETECTADA"
+
+    return "SIN_CATEGORIA"
+
+
+def generar_producto_categoria_vertical(
+    df_origen: pd.DataFrame,
+    grupo: pd.DataFrame,
+    columnas_origen_norm: dict[str, str],
+    producto_key_origen: pd.Series,
+    codigo_origen_real: pd.Series,
+    tabla_destino: str,
+    errores: list[dict],
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Genera PRODUCTO_CATEGORIA en formato vertical por columna de categoria origen.
+
+    Decision conservadora v1.14.0:
+    - CLASIFICACION_1..11 generan filas por categoria_origen.
+    - MERCA_CLI, CLASI_MERCA, PSO, MERCA_CLI_MERCA generan filas tipo MERCADO.
+    - CLASIFICACION_WO genera fila tipo ERP_WO.
+    - No se deduplica por producto + categoria_id porque se perderia trazabilidad de columna origen.
+    - No se inventa categoria_id.
+    - No se crea fila vacia.
+    - No se usan reglas por producto, codigo, fila o valor especifico.
+    """
+    registros = []
+    columnas_procesadas = 0
+    columnas_no_encontradas = 0
+    campos_destino_vacios = 0
+
+    columnas_mapeadas = {
+        normalizar_nombre_columna(str(r["COLUMNA_ORIGEN"]).strip()): str(r["COLUMNA_ORIGEN"]).strip()
+        for _, r in grupo.iterrows()
+    }
+
+    for col_norm, col_origen in columnas_mapeadas.items():
+        if col_norm in columnas_origen_norm:
+            columnas_procesadas += 1
+        else:
+            columnas_no_encontradas += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "campo_destino": "",
+                "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                "detalle": "La columna del mapeo no existe en el archivo origen.",
+            })
+
+    for idx in df_origen.index:
+        for definicion in CATEGORIAS_PRODUCTO_DEFINICION:
+            categoria_id = str(valor_origen_seguro(
+                df_origen,
+                columnas_origen_norm,
+                definicion["categoria_origen"],
+                idx,
+            ) or "").strip()
+
+            estado = estado_producto_categoria(categoria_id)
+
+            if estado == "SIN_CATEGORIA":
+                continue
+
+            registros.append({
+                "_origen_row": int(idx) + 1,
+                "_producto_key_origen": producto_key_origen.loc[idx],
+                "_codigo_origen": codigo_origen_real.loc[idx],
+                "categoria_origen": definicion["categoria_origen"],
+                "tipo_categoria": definicion["tipo_categoria"],
+                "orden": definicion["orden"],
+                "categoria_id": categoria_id,
+                "es_principal": definicion["es_principal"],
+                "estado_producto_categoria": estado,
+            })
+
+    columnas = [
+        "_origen_row",
+        "_producto_key_origen",
+        "_codigo_origen",
+        "categoria_origen",
+        "tipo_categoria",
+        "orden",
+        "categoria_id",
+        "es_principal",
+        "estado_producto_categoria",
+    ]
+
+    registros_tabla = pd.DataFrame(registros, columns=columnas)
+
+    estadisticas = {
+        "columnas_procesadas": columnas_procesadas,
+        "columnas_no_encontradas": columnas_no_encontradas,
+        "campos_destino_vacios": campos_destino_vacios,
+        "modo_generacion": "VERTICAL_POR_CATEGORIA_ORIGEN",
+    }
+
+    return registros_tabla, estadisticas
+
+
 def generar_producto_proveedor_vertical(
     df_origen: pd.DataFrame,
     grupo: pd.DataFrame,
@@ -2246,6 +2371,17 @@ def generar_tablas_normalizadas(
 
         elif tabla_norm == "producto_certificado":
             registros_tabla, estadisticas = generar_producto_certificado_vertical(
+                df_origen=df_origen,
+                grupo=grupo,
+                columnas_origen_norm=columnas_origen_norm,
+                producto_key_origen=producto_key_origen,
+                codigo_origen_real=codigo_origen_real,
+                tabla_destino=tabla_destino,
+                errores=errores,
+            )
+
+        elif tabla_norm == "producto_categoria":
+            registros_tabla, estadisticas = generar_producto_categoria_vertical(
                 df_origen=df_origen,
                 grupo=grupo,
                 columnas_origen_norm=columnas_origen_norm,
