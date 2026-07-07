@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 
-VERSION = "1.9.0"
+VERSION = "1.10.0"
 
 
 VALORES_NO_MATERIALES = {
@@ -113,6 +113,62 @@ CERTIFICADOS_PRODUCTO_DEFINICION = {
     "CERTIFICADO_3": {"tipo_certificado": "GENERAL"},
     "CERTIFICADO_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
     "COD_PROV_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
+}
+
+
+KEYWORDS_PRODUCTO_DEFINICION = {
+    "PALABRAS_CLAVE": {
+        "tipo_keyword": "GENERAL",
+        "orden": 0,
+    },
+    "PALABRA_CLAVE_1": {
+        "tipo_keyword": "GENERAL",
+        "orden": 1,
+    },
+    "PALABRA_CLAVE_2": {
+        "tipo_keyword": "GENERAL",
+        "orden": 2,
+    },
+    "PALABRA_CLAVE_3": {
+        "tipo_keyword": "GENERAL",
+        "orden": 3,
+    },
+    "PALABRA_CLAVE_4": {
+        "tipo_keyword": "GENERAL",
+        "orden": 4,
+    },
+    "PALABRA_CLAVE_5": {
+        "tipo_keyword": "GENERAL",
+        "orden": 5,
+    },
+    "PALABRA_CLAVE_6": {
+        "tipo_keyword": "GENERAL",
+        "orden": 6,
+    },
+    "PALABRA_CLAVE_7": {
+        "tipo_keyword": "GENERAL",
+        "orden": 7,
+    },
+    "PALABRA_CLAVE_8": {
+        "tipo_keyword": "GENERAL",
+        "orden": 8,
+    },
+    "PALABRA_CLAVE_VAR_1": {
+        "tipo_keyword": "VARIABLE",
+        "orden": 1,
+    },
+    "PALABRA_CLAVE_VAR_2": {
+        "tipo_keyword": "VARIABLE",
+        "orden": 2,
+    },
+    "PALABRA_CLAVE_VAR_3": {
+        "tipo_keyword": "VARIABLE",
+        "orden": 3,
+    },
+    "BUSCA_APLICACION": {
+        "tipo_keyword": "APLICACION",
+        "orden": 1,
+    },
 }
 
 
@@ -1141,6 +1197,120 @@ def generar_producto_certificado_vertical(
 
 
 
+
+def estado_keyword(keyword, tipo_keyword: str) -> str:
+    """
+    Estado trazable de keyword sin interpretar ni tokenizar el contenido.
+    """
+    if not valor_es_material(keyword):
+        return "SIN_KEYWORD"
+
+    if tipo_keyword == "VARIABLE":
+        return "KEYWORD_VARIABLE_DETECTADA"
+
+    if tipo_keyword == "APLICACION":
+        return "KEYWORD_APLICACION_DETECTADA"
+
+    return "KEYWORD_GENERAL_DETECTADA"
+
+
+def generar_producto_keyword_vertical(
+    df_origen: pd.DataFrame,
+    grupo: pd.DataFrame,
+    columnas_origen_norm: dict[str, str],
+    producto_key_origen: pd.Series,
+    codigo_origen_real: pd.Series,
+    tabla_destino: str,
+    errores: list[dict],
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Genera PRODUCTO_KEYWORD en formato vertical.
+
+    Decision conservadora v1.10.0:
+    - Cada columna keyword material genera su propia fila.
+    - No se tokenizan frases.
+    - No se separan palabras por espacios.
+    - No se deducen sinonimos.
+    - No se usan reglas por producto, codigo, fila o valor especifico.
+    """
+    registros = []
+    columnas_procesadas = 0
+    columnas_no_encontradas = 0
+    campos_destino_vacios = 0
+
+    columnas_mapeadas = {
+        normalizar_nombre_columna(str(r["COLUMNA_ORIGEN"]).strip()): str(r["COLUMNA_ORIGEN"]).strip()
+        for _, r in grupo.iterrows()
+    }
+
+    for col_norm, col_origen in columnas_mapeadas.items():
+        if col_norm in columnas_origen_norm:
+            columnas_procesadas += 1
+        else:
+            columnas_no_encontradas += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "campo_destino": "",
+                "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                "detalle": "La columna del mapeo no existe en el archivo origen.",
+            })
+
+    for col_origen, definicion in KEYWORDS_PRODUCTO_DEFINICION.items():
+        col_origen_norm = normalizar_nombre_columna(col_origen)
+
+        if col_origen_norm not in columnas_mapeadas:
+            continue
+
+        if col_origen_norm not in columnas_origen_norm:
+            continue
+
+        col_real = columnas_origen_norm[col_origen_norm]
+        serie = df_origen[col_real].map(lambda v: aplicar_transformacion(v, ""))
+        mask_material = serie.map(valor_es_material)
+
+        for idx in serie[mask_material].index:
+            keyword = str(serie.loc[idx]).strip()
+            tipo_keyword = definicion["tipo_keyword"]
+            orden = definicion["orden"]
+
+            registros.append({
+                "_origen_row": int(idx) + 1,
+                "_producto_key_origen": producto_key_origen.loc[idx],
+                "_codigo_origen": codigo_origen_real.loc[idx],
+                "keyword_origen": col_origen,
+                "tipo_keyword": tipo_keyword,
+                "orden": orden,
+                "keyword": keyword,
+                "estado_keyword": estado_keyword(
+                    keyword=keyword,
+                    tipo_keyword=tipo_keyword,
+                ),
+            })
+
+    columnas = [
+        "_origen_row",
+        "_producto_key_origen",
+        "_codigo_origen",
+        "keyword_origen",
+        "tipo_keyword",
+        "orden",
+        "keyword",
+        "estado_keyword",
+    ]
+
+    registros_tabla = pd.DataFrame(registros, columns=columnas)
+
+    estadisticas = {
+        "columnas_procesadas": columnas_procesadas,
+        "columnas_no_encontradas": columnas_no_encontradas,
+        "campos_destino_vacios": campos_destino_vacios,
+        "modo_generacion": "VERTICAL_POR_KEYWORD_ORIGEN",
+    }
+
+    return registros_tabla, estadisticas
+
+
 def obtener_valor_columna_origen(
     df_origen: pd.DataFrame,
     columnas_origen_norm: dict[str, str],
@@ -1496,6 +1666,17 @@ def generar_tablas_normalizadas(
 
         elif tabla_norm == "producto_certificado":
             registros_tabla, estadisticas = generar_producto_certificado_vertical(
+                df_origen=df_origen,
+                grupo=grupo,
+                columnas_origen_norm=columnas_origen_norm,
+                producto_key_origen=producto_key_origen,
+                codigo_origen_real=codigo_origen_real,
+                tabla_destino=tabla_destino,
+                errores=errores,
+            )
+
+        elif tabla_norm == "producto_keyword":
+            registros_tabla, estadisticas = generar_producto_keyword_vertical(
                 df_origen=df_origen,
                 grupo=grupo,
                 columnas_origen_norm=columnas_origen_norm,
