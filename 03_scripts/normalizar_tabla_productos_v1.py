@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 
-VERSION = "1.12.0"
+VERSION = "1.13.0"
 
 
 VALORES_NO_MATERIALES = {
@@ -114,6 +114,74 @@ CERTIFICADOS_PRODUCTO_DEFINICION = {
     "CERTIFICADO_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
     "COD_PROV_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
 }
+
+
+PROVEEDORES_PRODUCTO_DEFINICION = [
+    {
+        "orden": 1,
+        "proveedor_origen": "PROVEEDOR",
+        "codigo_origen": "CODIGO_PROV",
+        "link_origen": "LINK_PROV",
+        "stock_rectificado_origen": "STOCK_RECTIFICADO_1",
+        "stock_encontrado_origen": "STOCK_ENCONTRADO_1",
+    },
+    {
+        "orden": 2,
+        "proveedor_origen": "PROVEEDOR_2",
+        "codigo_origen": "CODIGO_PROV_2",
+        "link_origen": "LINK_PROV_2",
+        "stock_rectificado_origen": "STOCK_RECTIFICADO_2",
+        "stock_encontrado_origen": "STOCK_ENCONTRADO_2",
+    },
+    {
+        "orden": 3,
+        "proveedor_origen": "PROVEEDOR_3",
+        "codigo_origen": "CODIGO_PROV_3",
+        "link_origen": "LINK_PROV_3",
+        "stock_rectificado_origen": "STOCK_RECTIFICADO_3",
+        "stock_encontrado_origen": "STOCK_ENCONTRADO_3",
+    },
+    {
+        "orden": 4,
+        "proveedor_origen": "PROVEEDOR_4",
+        "codigo_origen": "",
+        "link_origen": "LINK_PROV_4",
+        "stock_rectificado_origen": "STOCK_RECTIFICADO_4",
+        "stock_encontrado_origen": "STOCK_ENCONTRADO_4",
+    },
+    {
+        "orden": 5,
+        "proveedor_origen": "PROVEEDOR_5",
+        "codigo_origen": "",
+        "link_origen": "LINK_PROV_5",
+        "stock_rectificado_origen": "STOCK_RECTIFICADO_5",
+        "stock_encontrado_origen": "STOCK_ENCONTRADO_5",
+    },
+    {
+        "orden": 6,
+        "proveedor_origen": "PROVEEDOR_6",
+        "codigo_origen": "",
+        "link_origen": "LINK_PROV_6",
+        "stock_rectificado_origen": "STOCK_RECTIFICADO_6",
+        "stock_encontrado_origen": "STOCK_ENCONTRADO_6",
+    },
+    {
+        "orden": 7,
+        "proveedor_origen": "PROVEEDOR_7",
+        "codigo_origen": "",
+        "link_origen": "LINK_PROV_7",
+        "stock_rectificado_origen": "STOCK_RECTIFICADO_7",
+        "stock_encontrado_origen": "STOCK_ENCONTRADO_7",
+    },
+    {
+        "orden": 8,
+        "proveedor_origen": "PROVEEDOR_8",
+        "codigo_origen": "",
+        "link_origen": "LINK_PROV_8",
+        "stock_rectificado_origen": "STOCK_RECTIFICADO_8",
+        "stock_encontrado_origen": "STOCK_ENCONTRADO_8",
+    },
+]
 
 
 CAMPANAS_PRODUCTO_DEFINICION = {
@@ -1240,6 +1308,207 @@ def generar_producto_certificado_vertical(
 
 
 
+
+def valor_origen_seguro(
+    df_origen: pd.DataFrame,
+    columnas_origen_norm: dict[str, str],
+    columna_origen: str,
+    idx,
+):
+    """
+    Lee un valor de origen sin inventar datos si la columna no existe.
+    """
+    if not columna_origen:
+        return ""
+
+    col_norm = normalizar_nombre_columna(columna_origen)
+    col_real = columnas_origen_norm.get(col_norm)
+
+    if not col_real:
+        return ""
+
+    return df_origen.at[idx, col_real]
+
+
+def estado_producto_proveedor(proveedor_id, codigo_proveedor, link, stock_rectificado, stock_encontrado) -> str:
+    """
+    Estado trazable de producto-proveedor sin inventar proveedor_id.
+    """
+    tiene_proveedor = valor_es_material(proveedor_id)
+    tiene_atributos = any([
+        valor_es_material(codigo_proveedor),
+        valor_es_material(link),
+        valor_es_material(stock_rectificado),
+        valor_es_material(stock_encontrado),
+    ])
+
+    if tiene_proveedor and tiene_atributos:
+        return "PROVEEDOR_CON_ATRIBUTOS"
+
+    if tiene_proveedor:
+        return "PROVEEDOR_DETECTADO"
+
+    if tiene_atributos:
+        return "ATRIBUTOS_SIN_PROVEEDOR_ID"
+
+    return "SIN_PROVEEDOR"
+
+
+def generar_producto_proveedor_vertical(
+    df_origen: pd.DataFrame,
+    grupo: pd.DataFrame,
+    columnas_origen_norm: dict[str, str],
+    producto_key_origen: pd.Series,
+    codigo_origen_real: pd.Series,
+    tabla_destino: str,
+    errores: list[dict],
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Genera PRODUCTO_PROVEEDOR en formato vertical posicional.
+
+    Decision conservadora v1.13.0:
+    - PROVEEDOR / PROVEEDOR_2..8 generan filas por posicion.
+    - Los atributos de cada posicion se conservan en la misma fila.
+    - No se inventa proveedor_id.
+    - No se crea fila totalmente vacia.
+    - Los atributos sin proveedor_id se conservan con estado ATRIBUTOS_SIN_PROVEEDOR_ID.
+    - No se usan reglas por producto, codigo, fila o valor especifico.
+    """
+    registros = []
+    columnas_procesadas = 0
+    columnas_no_encontradas = 0
+    campos_destino_vacios = 0
+
+    columnas_mapeadas = {
+        normalizar_nombre_columna(str(r["COLUMNA_ORIGEN"]).strip()): str(r["COLUMNA_ORIGEN"]).strip()
+        for _, r in grupo.iterrows()
+    }
+
+    for col_norm, col_origen in columnas_mapeadas.items():
+        if col_norm in columnas_origen_norm:
+            columnas_procesadas += 1
+        else:
+            columnas_no_encontradas += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "campo_destino": "",
+                "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                "detalle": "La columna del mapeo no existe en el archivo origen.",
+            })
+
+    # Atributos generales de verificacion del proveedor se conservan en todas las filas del producto.
+    atributos_generales = [
+        "STOCK_OBSERVACION_BUSQUEDA",
+        "PROVEEDOR_ESTADO",
+        "PROVEEDOR_NO_COINCIDE",
+        "LINK_PROV_VERIFICADO",
+        "COD_PROV_SC",
+    ]
+
+    for idx in df_origen.index:
+        for definicion in PROVEEDORES_PRODUCTO_DEFINICION:
+            proveedor_id = str(valor_origen_seguro(
+                df_origen,
+                columnas_origen_norm,
+                definicion["proveedor_origen"],
+                idx,
+            ) or "").strip()
+
+            codigo_proveedor = str(valor_origen_seguro(
+                df_origen,
+                columnas_origen_norm,
+                definicion["codigo_origen"],
+                idx,
+            ) or "").strip()
+
+            link = str(valor_origen_seguro(
+                df_origen,
+                columnas_origen_norm,
+                definicion["link_origen"],
+                idx,
+            ) or "").strip()
+
+            stock_rectificado = str(valor_origen_seguro(
+                df_origen,
+                columnas_origen_norm,
+                definicion["stock_rectificado_origen"],
+                idx,
+            ) or "").strip()
+
+            stock_encontrado = str(valor_origen_seguro(
+                df_origen,
+                columnas_origen_norm,
+                definicion["stock_encontrado_origen"],
+                idx,
+            ) or "").strip()
+
+            estado = estado_producto_proveedor(
+                proveedor_id=proveedor_id,
+                codigo_proveedor=codigo_proveedor,
+                link=link,
+                stock_rectificado=stock_rectificado,
+                stock_encontrado=stock_encontrado,
+            )
+
+            if estado == "SIN_PROVEEDOR":
+                continue
+
+            registro = {
+                "_origen_row": int(idx) + 1,
+                "_producto_key_origen": producto_key_origen.loc[idx],
+                "_codigo_origen": codigo_origen_real.loc[idx],
+                "proveedor_origen": definicion["proveedor_origen"],
+                "orden": definicion["orden"],
+                "proveedor_id": proveedor_id if valor_es_material(proveedor_id) else "",
+                "codigo_proveedor": codigo_proveedor if valor_es_material(codigo_proveedor) else "",
+                "link": link if valor_es_material(link) else "",
+                "stock_rectificado": stock_rectificado if valor_es_material(stock_rectificado) else "",
+                "stock_encontrado": stock_encontrado if valor_es_material(stock_encontrado) else "",
+                "estado_producto_proveedor": estado,
+            }
+
+            for col in atributos_generales:
+                registro[col.lower()] = str(valor_origen_seguro(
+                    df_origen,
+                    columnas_origen_norm,
+                    col,
+                    idx,
+                ) or "").strip()
+
+            registros.append(registro)
+
+    columnas = [
+        "_origen_row",
+        "_producto_key_origen",
+        "_codigo_origen",
+        "proveedor_origen",
+        "orden",
+        "proveedor_id",
+        "codigo_proveedor",
+        "link",
+        "stock_rectificado",
+        "stock_encontrado",
+        "estado_producto_proveedor",
+        "stock_observacion_busqueda",
+        "proveedor_estado",
+        "proveedor_no_coincide",
+        "link_prov_verificado",
+        "cod_prov_sc",
+    ]
+
+    registros_tabla = pd.DataFrame(registros, columns=columnas)
+
+    estadisticas = {
+        "columnas_procesadas": columnas_procesadas,
+        "columnas_no_encontradas": columnas_no_encontradas,
+        "campos_destino_vacios": campos_destino_vacios,
+        "modo_generacion": "VERTICAL_POR_PROVEEDOR_ORIGEN",
+    }
+
+    return registros_tabla, estadisticas
+
+
 def estado_producto_campana(campana_id, en_promocion: str) -> str:
     """
     Estado trazable de producto-campana sin inventar datos maestros de campana.
@@ -1977,6 +2246,17 @@ def generar_tablas_normalizadas(
 
         elif tabla_norm == "producto_certificado":
             registros_tabla, estadisticas = generar_producto_certificado_vertical(
+                df_origen=df_origen,
+                grupo=grupo,
+                columnas_origen_norm=columnas_origen_norm,
+                producto_key_origen=producto_key_origen,
+                codigo_origen_real=codigo_origen_real,
+                tabla_destino=tabla_destino,
+                errores=errores,
+            )
+
+        elif tabla_norm == "producto_proveedor":
+            registros_tabla, estadisticas = generar_producto_proveedor_vertical(
                 df_origen=df_origen,
                 grupo=grupo,
                 columnas_origen_norm=columnas_origen_norm,
