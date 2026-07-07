@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 
-VERSION = "1.10.0"
+VERSION = "1.11.0"
 
 
 VALORES_NO_MATERIALES = {
@@ -113,6 +113,30 @@ CERTIFICADOS_PRODUCTO_DEFINICION = {
     "CERTIFICADO_3": {"tipo_certificado": "GENERAL"},
     "CERTIFICADO_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
     "COD_PROV_CALIBRACION": {"tipo_certificado": "CALIBRACION"},
+}
+
+
+MEDIA_PRODUCTO_DEFINICION = {
+    "FOTO_PROD": {
+        "tipo_media": "FOTO",
+        "orden": 1,
+        "es_principal": "1",
+    },
+    "DIBUJO_2": {
+        "tipo_media": "DIBUJO",
+        "orden": 2,
+        "es_principal": "0",
+    },
+    "DIBUJO_3": {
+        "tipo_media": "DIBUJO",
+        "orden": 3,
+        "es_principal": "0",
+    },
+    "DIBUJO_4": {
+        "tipo_media": "DIBUJO",
+        "orden": 4,
+        "es_principal": "0",
+    },
 }
 
 
@@ -1198,6 +1222,125 @@ def generar_producto_certificado_vertical(
 
 
 
+
+def estado_media(url, tipo_media: str, es_principal: str) -> str:
+    """
+    Estado trazable de media sin interpretar la imagen ni deducir tipo por extension.
+    """
+    if not valor_es_material(url):
+        return "SIN_URL_MEDIA"
+
+    if tipo_media == "FOTO" and es_principal == "1":
+        return "FOTO_PRINCIPAL_DETECTADA"
+
+    if tipo_media == "DIBUJO":
+        return "DIBUJO_DETECTADO"
+
+    return "MEDIA_DETECTADA"
+
+
+def generar_producto_media_vertical(
+    df_origen: pd.DataFrame,
+    grupo: pd.DataFrame,
+    columnas_origen_norm: dict[str, str],
+    producto_key_origen: pd.Series,
+    codigo_origen_real: pd.Series,
+    tabla_destino: str,
+    errores: list[dict],
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Genera PRODUCTO_MEDIA en formato vertical.
+
+    Decision conservadora v1.11.0:
+    - Cada columna media material genera su propia fila.
+    - FOTO_PROD se conserva como FOTO principal.
+    - DIBUJO_2, DIBUJO_3 y DIBUJO_4 se conservan como DIBUJO con orden.
+    - No se crea fila sin url material.
+    - No se deduce tipo por extension.
+    - No se usan reglas por producto, codigo, fila o valor especifico.
+    """
+    registros = []
+    columnas_procesadas = 0
+    columnas_no_encontradas = 0
+    campos_destino_vacios = 0
+
+    columnas_mapeadas = {
+        normalizar_nombre_columna(str(r["COLUMNA_ORIGEN"]).strip()): str(r["COLUMNA_ORIGEN"]).strip()
+        for _, r in grupo.iterrows()
+    }
+
+    for col_norm, col_origen in columnas_mapeadas.items():
+        if col_norm in columnas_origen_norm:
+            columnas_procesadas += 1
+        else:
+            columnas_no_encontradas += 1
+            errores.append({
+                "tabla_destino": tabla_destino,
+                "columna_origen": col_origen,
+                "campo_destino": "",
+                "error": "COLUMNA_ORIGEN_NO_EXISTE",
+                "detalle": "La columna del mapeo no existe en el archivo origen.",
+            })
+
+    for col_origen, definicion in MEDIA_PRODUCTO_DEFINICION.items():
+        col_origen_norm = normalizar_nombre_columna(col_origen)
+
+        if col_origen_norm not in columnas_mapeadas:
+            continue
+
+        if col_origen_norm not in columnas_origen_norm:
+            continue
+
+        col_real = columnas_origen_norm[col_origen_norm]
+        serie = df_origen[col_real].map(lambda v: aplicar_transformacion(v, ""))
+        mask_material = serie.map(valor_es_material)
+
+        for idx in serie[mask_material].index:
+            url = str(serie.loc[idx]).strip()
+            tipo_media = definicion["tipo_media"]
+            orden = definicion["orden"]
+            es_principal = definicion["es_principal"]
+
+            registros.append({
+                "_origen_row": int(idx) + 1,
+                "_producto_key_origen": producto_key_origen.loc[idx],
+                "_codigo_origen": codigo_origen_real.loc[idx],
+                "media_origen": col_origen,
+                "tipo_media": tipo_media,
+                "orden": orden,
+                "es_principal": es_principal,
+                "url": url,
+                "estado_media": estado_media(
+                    url=url,
+                    tipo_media=tipo_media,
+                    es_principal=es_principal,
+                ),
+            })
+
+    columnas = [
+        "_origen_row",
+        "_producto_key_origen",
+        "_codigo_origen",
+        "media_origen",
+        "tipo_media",
+        "orden",
+        "es_principal",
+        "url",
+        "estado_media",
+    ]
+
+    registros_tabla = pd.DataFrame(registros, columns=columnas)
+
+    estadisticas = {
+        "columnas_procesadas": columnas_procesadas,
+        "columnas_no_encontradas": columnas_no_encontradas,
+        "campos_destino_vacios": campos_destino_vacios,
+        "modo_generacion": "VERTICAL_POR_MEDIA_ORIGEN",
+    }
+
+    return registros_tabla, estadisticas
+
+
 def estado_keyword(keyword, tipo_keyword: str) -> str:
     """
     Estado trazable de keyword sin interpretar ni tokenizar el contenido.
@@ -1666,6 +1809,17 @@ def generar_tablas_normalizadas(
 
         elif tabla_norm == "producto_certificado":
             registros_tabla, estadisticas = generar_producto_certificado_vertical(
+                df_origen=df_origen,
+                grupo=grupo,
+                columnas_origen_norm=columnas_origen_norm,
+                producto_key_origen=producto_key_origen,
+                codigo_origen_real=codigo_origen_real,
+                tabla_destino=tabla_destino,
+                errores=errores,
+            )
+
+        elif tabla_norm == "producto_media":
+            registros_tabla, estadisticas = generar_producto_media_vertical(
                 df_origen=df_origen,
                 grupo=grupo,
                 columnas_origen_norm=columnas_origen_norm,
