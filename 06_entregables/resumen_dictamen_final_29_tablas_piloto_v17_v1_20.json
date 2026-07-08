@@ -1,0 +1,15 @@
+{
+  "fecha_generacion": "2026-07-08T11:18:58",
+  "piloto": "v17",
+  "normalizador": "v1.20.0",
+  "total_tablas": 29,
+  "tablas_bloqueantes": 0,
+  "tablas_sin_bloqueo": 29,
+  "dictamenes": {
+    "CERRADA_PILOTO": 23,
+    "VACIA_EXPLICADA_EN_MUESTRA": 3,
+    "CERRADA_CON_OBSERVACION_DOCUMENTADA": 2,
+    "CERRADA_PILOTO_VALIDACION_BD_COMPLETA_FUERA_ALCANCE": 1
+  },
+  "conclusion": "El piloto v17/v1.20.0 queda finiquitado técnicamente para presentación. No existen tablas bloqueantes dentro del alcance del piloto. La validación sobre el universo completo debe tratarse como siguiente fase, no como pendiente del piloto."
+}

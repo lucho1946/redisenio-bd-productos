@@ -1,0 +1,27 @@
+{
+  "fecha_generacion": "2026-07-08T11:29:11",
+  "piloto": "v17",
+  "normalizador": "v1.20.0",
+  "csv_salida_encontrados": 29,
+  "archivos_requeridos": 8,
+  "archivos_requeridos_ok": 8,
+  "producto_categoria": {
+    "filas_producto_categoria": 6798,
+    "tipo_categoria": {
+      "CLASIFICACION": 5798,
+      "ERP_WO": 1000
+    },
+    "mercado_restante": 0
+  },
+  "reporte_v120": {
+    "version": "1.20.0",
+    "filas_origen": 1000,
+    "columnas_origen": 445,
+    "columnas_mapeo": 445,
+    "tablas_generadas": 29,
+    "errores": 0
+  },
+  "bloqueantes": [],
+  "total_bloqueantes": 0,
+  "estado_presentacion": "LISTO_PARA_ARMAR_ENTREGABLE"
+}
