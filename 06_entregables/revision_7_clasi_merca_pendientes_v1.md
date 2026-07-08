@@ -1,69 +1,69 @@
-﻿# Revision de 7 casos CLASI_MERCA pendientes
+﻿# Decision tecnica - CLASI_MERCA en PRODUCTO_CATEGORIA
 
 Proyecto: redisenio_bd_productos  
-Piloto: v16  
-Normalizador: v1.19.0  
-Tabla: PRODUCTO_CATEGORIA  
+Piloto: v17  
+Normalizador: v1.20.0  
+Tabla revisada: PRODUCTO_CATEGORIA  
 Campo origen: CLASI_MERCA  
 
 ## 1. Contexto
 
-Durante la depuracion de PRODUCTO_CATEGORIA se revisaron los campos tipo MERCADO.
+Durante la revision de PRODUCTO_CATEGORIA se detecto que algunos campos tipo MERCADO estaban entrando como categorias.
 
-Primero se retiraron valores booleanos que no eran categorias:
+Primero se corrigieron valores booleanos que no eran categorias reales:
 
-| Campo | Valor | Registros |
+| Campo | Valor | Registros removidos |
 |---|---|---:|
 | MERCA_CLI | SI | 800 |
 | PSO | SI | 4 |
 
-Despues se revisaron 68 registros restantes de CLASI_MERCA:
+Despues se revisaron los registros de CLASI_MERCA:
 
 | Estado | Registros |
 |---|---:|
-| Duplicaban una CLASIFICACION del mismo producto | 61 |
-| No duplicaban exactamente | 7 |
+| CLASI_MERCA que duplicaban una CLASIFICACION del mismo producto | 61 |
+| CLASI_MERCA restantes no duplicados exactos | 7 |
 
-Los 61 duplicados fueron retirados en v1.19.0 para evitar doble registro semantico en PRODUCTO_CATEGORIA.
+Los 61 duplicados fueron removidos en v1.19.0.
 
-Quedan 7 casos que no duplican exactamente la clasificacion del producto. Estos casos se conservan provisionalmente porque pueden representar una categoria mas general, una dimension de mercado o un agrupador comercial.
+Los 7 restantes fueron analizados con contexto y se concluyo que no deben quedar como categoria definitiva dentro de PRODUCTO_CATEGORIA, porque representan agrupadores comerciales, relaciones de mercado o posibles categorias padre, no la clasificacion tecnica principal del producto.
 
-## 2. Casos pendientes
+## 2. Decision aplicada en v1.20.0
 
-| # | Producto | CLASI_MERCA pendiente | Lectura tecnica | Decision recomendada |
-|---:|---|---|---|---|
-| 1 | 100509 | Indicadores+de+cuadrante | Puede representar una familia comercial distinta a las clasificaciones actuales del producto. | REVISION_MODELO |
-| 2 | 141003 | Vacuometros+secos+caja+negra | Parece una categoria comercial mas especifica o paralela a la clasificacion actual. | REVISION_MODELO |
-| 3 | 284603 | Medidores+de+concentracion+de+gases | Puede funcionar como agrupador comercial general frente a una clasificacion mas especifica. | REVISION_MODELO |
-| 4 | 171803 | Medidores+de+flujo | Puede ser categoria general frente a una clasificacion especifica de hidrocarburos. | REVISION_MODELO |
-| 5 | 245002 | Metros+digitales | Puede representar agrupador comercial distinto a distanciometros/metros ultrasonicos. | REVISION_MODELO |
-| 6 | 201203 | Medidores+de+humedad+digitales+portatiles | Puede ser agrupador general frente a clasificaciones mas especificas por aplicacion/material. | REVISION_MODELO |
-| 7 | 186605 | Fuentes+de+alimentacion | Puede ser categoria general frente a fuentes switcheadas/industriales. | REVISION_MODELO |
+Se excluyen de PRODUCTO_CATEGORIA los 7 CLASI_MERCA restantes.
 
-## 3. Decision tecnica recomendada
+El dato no se elimina del origen. Queda documentado como informacion heredada de mercado, pendiente de definicion de modelo para una posible dimension comercial, alias o agrupador de navegacion.
 
-No retirar automaticamente estos 7 casos.
+## 3. Casos documentados
 
-Motivo:
+| # | Producto | CLASI_MERCA | Decision |
+|---:|---|---|---|
+| 1 | 100509 | Indicadores+de+cuadrante | Documentar como relacion comercial / revision de modelo |
+| 2 | 141003 | Vacuometros+secos+caja+negra | Documentar como agrupador o categoria comercial pendiente |
+| 3 | 284603 | Medidores+de+concentracion+de+gases | Documentar como relacion comercial / revision de modelo |
+| 4 | 171803 | Medidores+de+flujo | Documentar como categoria padre / agrupador |
+| 5 | 245002 | Metros+digitales | Documentar como categoria padre / agrupador |
+| 6 | 201203 | Medidores+de+humedad+digitales+portatiles | Documentar como categoria padre / agrupador |
+| 7 | 186605 | Fuentes+de+alimentacion | Documentar como categoria padre / agrupador |
 
-- No son booleanos.
-- No duplican exactamente una CLASIFICACION del mismo producto.
-- Pueden aportar una dimension comercial o una categoria padre.
-- Requieren definicion de modelo antes de decidir si quedan en PRODUCTO_CATEGORIA o en una tabla/dimension separada.
+## 4. Resultado final
 
-## 4. Estado recomendado
+| Control | Resultado |
+|---|---:|
+| PRODUCTO_CATEGORIA antes de v1.20.0 | 6805 |
+| CLASI_MERCA restantes removidos | 7 |
+| PRODUCTO_CATEGORIA final | 6798 |
+| MERCADO restante en PRODUCTO_CATEGORIA | 0 |
 
-CLASI_MERCA_DUPLICADO: cerrado  
-CLASI_MERCA_NO_DUPLICADO: pendiente de decision de modelo  
-PRODUCTO_CATEGORIA: cerrada tecnicamente con 7 observaciones  
+Distribucion final:
 
-## 5. Propuesta para Don Andres
+| tipo_categoria | Filas |
+|---|---:|
+| CLASIFICACION | 5798 |
+| ERP_WO | 1000 |
 
-Revisar estos 7 casos y confirmar si CLASI_MERCA debe manejarse como:
+## 5. Estado
 
-1. categoria adicional de mercado dentro de PRODUCTO_CATEGORIA;
-2. dimension comercial separada;
-3. alias/relacion con una categoria existente;
-4. campo heredado no reutilizable para el nuevo modelo.
+PRODUCTO_CATEGORIA queda cerrada tecnicamente para el piloto.
 
-Hasta tener esa decision, los 7 casos se conservan provisionalmente y se documentan como pendiente de modelo.
+No quedan registros tipo MERCADO dentro de PRODUCTO_CATEGORIA. La informacion de mercado queda documentada como pendiente de modelo, no aprobada como categoria definitiva.
